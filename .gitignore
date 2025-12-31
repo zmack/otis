@@ -1,0 +1,21 @@
+# Binary
+otis
+
+# Collected data - don't commit telemetry data
+data/
+
+# Go build artifacts
+*.test
+*.out
+coverage.txt
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
