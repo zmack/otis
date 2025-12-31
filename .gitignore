@@ -4,6 +4,9 @@ otis
 # Collected data - don't commit telemetry data
 data/
 
+# Database - don't commit aggregated data
+db/
+
 # Go build artifacts
 *.test
 *.out

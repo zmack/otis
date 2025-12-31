@@ -1,0 +1,154 @@
+package aggregator
+
+import "time"
+
+// SessionStats represents aggregated statistics for a single session
+type SessionStats struct {
+	SessionID        string
+	UserID           string
+	OrganizationID   string
+	ServiceName      string
+	StartTime        time.Time
+	LastUpdateTime   time.Time
+	TerminalType     string
+	HostArch         string
+	OSType           string
+
+	// Aggregated metrics
+	TotalCostUSD             float64
+	TotalInputTokens         int64
+	TotalOutputTokens        int64
+	TotalCacheReadTokens     int64
+	TotalCacheCreationTokens int64
+	TotalActiveTimeSeconds   float64
+
+	// Event counts
+	APIRequestCount     int
+	UserPromptCount     int
+	ToolExecutionCount  int
+	ToolSuccessCount    int
+	ToolFailureCount    int
+
+	// Performance metrics
+	AvgAPILatencyMS   float64
+	TotalAPILatencyMS float64
+
+	// JSON-encoded data
+	ModelsUsed string // JSON array
+	ToolsUsed  string // JSON object
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// UserStats represents aggregated statistics for a user within a time window
+type UserStats struct {
+	UserID         string
+	OrganizationID string
+	WindowStart    time.Time
+	WindowEnd      time.Time
+	WindowType     string // 'all-time', '7d', '30d', 'custom'
+
+	// Aggregated metrics
+	TotalSessions            int
+	TotalCostUSD             float64
+	TotalInputTokens         int64
+	TotalOutputTokens        int64
+	TotalCacheReadTokens     int64
+	TotalCacheCreationTokens int64
+	TotalActiveTimeSeconds   float64
+
+	// Averages
+	AvgCostPerSession            float64
+	AvgTokensPerSession          float64
+	AvgSessionDurationSeconds    float64
+
+	// JSON-encoded preferences
+	PreferredModels string // JSON array
+	FavoriteTools   string // JSON array
+
+	// Success metrics
+	ToolSuccessRate float64
+
+	LastSessionTime time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// OrgStats represents aggregated statistics for an organization within a time window
+type OrgStats struct {
+	OrganizationID string
+	WindowStart    time.Time
+	WindowEnd      time.Time
+	WindowType     string
+
+	// Aggregated metrics
+	TotalUsers             int
+	TotalSessions          int
+	TotalCostUSD           float64
+	TotalTokens            int64
+	TotalActiveTimeSeconds float64
+
+	// Averages
+	AvgCostPerUser     float64
+	AvgSessionsPerUser float64
+
+	// JSON-encoded top users
+	TopUsersByCost  string // JSON array
+	TopUsersByUsage string // JSON array
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// ProcessingState tracks the processing position for each JSONL file
+type ProcessingState struct {
+	FileName           string
+	LastProcessedLine  int
+	LastProcessedTime  time.Time
+	FileSizeBytes      int64
+	UpdatedAt          time.Time
+}
+
+// MetricRecord represents a parsed metric from the JSONL file
+type MetricRecord struct {
+	Timestamp      time.Time
+	SessionID      string
+	UserID         string
+	OrganizationID string
+	ServiceName    string
+	MetricName     string
+	MetricValue    interface{}
+	Attributes     map[string]string
+}
+
+// LogRecord represents a parsed log from the JSONL file
+type LogRecord struct {
+	Timestamp      time.Time
+	SessionID      string
+	UserID         string
+	OrganizationID string
+	ServiceName    string
+	SeverityText   string
+	Body           string
+	Attributes     map[string]interface{}
+}
+
+// TraceRecord represents a parsed trace/span from the JSONL file
+type TraceRecord struct {
+	Timestamp      time.Time
+	SessionID      string
+	UserID         string
+	OrganizationID string
+	ServiceName    string
+	SpanName       string
+	DurationMS     float64
+	Attributes     map[string]string
+}
+
+// TimeWindow represents a time range for queries
+type TimeWindow struct {
+	Start time.Time
+	End   time.Time
+	Type  string // 'all-time', '7d', '30d', 'custom'
+}
