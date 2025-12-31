@@ -1,4 +1,6 @@
-# Otis - OTLP Collector & Aggregator
+# Otis - Open Telemetry Intelligence Station
+
+**OTIS**: **O**pen **T**elemetry **I**ntelligence **S**tation
 
 A lightweight OpenTelemetry Protocol (OTLP) collector and aggregation system built in Go. Otis receives telemetry data (traces, metrics, logs) via OTLP/HTTP, stores it in JSON Lines format, and provides aggregated statistics through a REST API.
 
