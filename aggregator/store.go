@@ -141,6 +141,41 @@ func (s *Store) InitSchema() error {
 		file_size_bytes INTEGER,
 		updated_at INTEGER
 	);
+
+	CREATE TABLE IF NOT EXISTS session_model_stats (
+		session_id TEXT NOT NULL,
+		model TEXT NOT NULL,
+		cost_usd REAL DEFAULT 0,
+		input_tokens INTEGER DEFAULT 0,
+		output_tokens INTEGER DEFAULT 0,
+		cache_read_tokens INTEGER DEFAULT 0,
+		cache_creation_tokens INTEGER DEFAULT 0,
+		request_count INTEGER DEFAULT 0,
+		total_latency_ms REAL DEFAULT 0,
+		avg_latency_ms REAL DEFAULT 0,
+		PRIMARY KEY (session_id, model),
+		FOREIGN KEY (session_id) REFERENCES session_stats(session_id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_model_name ON session_model_stats(model);
+	CREATE INDEX IF NOT EXISTS idx_model_session ON session_model_stats(session_id);
+
+	CREATE TABLE IF NOT EXISTS session_tool_stats (
+		session_id TEXT NOT NULL,
+		tool_name TEXT NOT NULL,
+		execution_count INTEGER DEFAULT 0,
+		success_count INTEGER DEFAULT 0,
+		failure_count INTEGER DEFAULT 0,
+		total_duration_ms REAL DEFAULT 0,
+		avg_duration_ms REAL DEFAULT 0,
+		min_duration_ms REAL DEFAULT 0,
+		max_duration_ms REAL DEFAULT 0,
+		PRIMARY KEY (session_id, tool_name),
+		FOREIGN KEY (session_id) REFERENCES session_stats(session_id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_tool_name ON session_tool_stats(tool_name);
+	CREATE INDEX IF NOT EXISTS idx_tool_session ON session_tool_stats(session_id);
 	`
 
 	_, err := s.db.Exec(schema)
@@ -198,6 +233,62 @@ func (s *Store) UpsertSessionStats(stats *SessionStats) error {
 		stats.AvgAPILatencyMS, stats.TotalAPILatencyMS,
 		stats.ModelsUsed, stats.ToolsUsed,
 		stats.CreatedAt.Unix(), stats.UpdatedAt.Unix(),
+	)
+
+	return err
+}
+
+// UpsertSessionModelStats upserts model statistics for a session
+func (s *Store) UpsertSessionModelStats(modelStats *SessionModelStats) error {
+	query := `
+	INSERT INTO session_model_stats (
+		session_id, model, cost_usd, input_tokens, output_tokens,
+		cache_read_tokens, cache_creation_tokens, request_count,
+		total_latency_ms, avg_latency_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(session_id, model) DO UPDATE SET
+		cost_usd = excluded.cost_usd,
+		input_tokens = excluded.input_tokens,
+		output_tokens = excluded.output_tokens,
+		cache_read_tokens = excluded.cache_read_tokens,
+		cache_creation_tokens = excluded.cache_creation_tokens,
+		request_count = excluded.request_count,
+		total_latency_ms = excluded.total_latency_ms,
+		avg_latency_ms = excluded.avg_latency_ms
+	`
+
+	_, err := s.db.Exec(query,
+		modelStats.SessionID, modelStats.Model, modelStats.CostUSD,
+		modelStats.InputTokens, modelStats.OutputTokens,
+		modelStats.CacheReadTokens, modelStats.CacheCreationTokens,
+		modelStats.RequestCount, modelStats.TotalLatencyMS, modelStats.AvgLatencyMS,
+	)
+
+	return err
+}
+
+// UpsertSessionToolStats upserts tool statistics for a session
+func (s *Store) UpsertSessionToolStats(toolStats *SessionToolStats) error {
+	query := `
+	INSERT INTO session_tool_stats (
+		session_id, tool_name, execution_count, success_count, failure_count,
+		total_duration_ms, avg_duration_ms, min_duration_ms, max_duration_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(session_id, tool_name) DO UPDATE SET
+		execution_count = excluded.execution_count,
+		success_count = excluded.success_count,
+		failure_count = excluded.failure_count,
+		total_duration_ms = excluded.total_duration_ms,
+		avg_duration_ms = excluded.avg_duration_ms,
+		min_duration_ms = excluded.min_duration_ms,
+		max_duration_ms = excluded.max_duration_ms
+	`
+
+	_, err := s.db.Exec(query,
+		toolStats.SessionID, toolStats.ToolName,
+		toolStats.ExecutionCount, toolStats.SuccessCount, toolStats.FailureCount,
+		toolStats.TotalDurationMS, toolStats.AvgDurationMS,
+		toolStats.MinDurationMS, toolStats.MaxDurationMS,
 	)
 
 	return err

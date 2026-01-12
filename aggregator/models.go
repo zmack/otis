@@ -101,6 +101,33 @@ type OrgStats struct {
 	UpdatedAt time.Time
 }
 
+// SessionModelStats represents per-model statistics within a session
+type SessionModelStats struct {
+	SessionID             string
+	Model                 string
+	CostUSD               float64
+	InputTokens           int64
+	OutputTokens          int64
+	CacheReadTokens       int64
+	CacheCreationTokens   int64
+	RequestCount          int
+	TotalLatencyMS        float64
+	AvgLatencyMS          float64
+}
+
+// SessionToolStats represents per-tool statistics within a session
+type SessionToolStats struct {
+	SessionID       string
+	ToolName        string
+	ExecutionCount  int
+	SuccessCount    int
+	FailureCount    int
+	TotalDurationMS float64
+	AvgDurationMS   float64
+	MinDurationMS   float64
+	MaxDurationMS   float64
+}
+
 // ProcessingState tracks the processing position for each JSONL file
 type ProcessingState struct {
 	FileName           string

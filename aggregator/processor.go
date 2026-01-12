@@ -223,8 +223,9 @@ func (p *Processor) processMetricData(data map[string]interface{}) error {
 					continue
 				}
 
-				record := extractMetricRecord(mMap, attrs)
-				if record != nil {
+				// Extract all data points from this metric
+				records := extractMetricRecords(mMap, attrs)
+				for _, record := range records {
 					p.engine.ProcessMetric(record)
 				}
 			}
@@ -374,22 +375,28 @@ func extractResourceAttributes(resourceMap map[string]interface{}) map[string]st
 	return attrs
 }
 
-func extractMetricRecord(metricMap map[string]interface{}, resourceAttrs map[string]string) *MetricRecord {
+func extractMetricRecords(metricMap map[string]interface{}, resourceAttrs map[string]string) []*MetricRecord {
 	name, _ := metricMap["name"].(string)
 	if name == "" {
 		return nil
 	}
 
-	// For simplicity, we'll extract the first data point
-	// Real implementation might need to handle multiple data points
-	var timestamp time.Time
-	var value interface{}
+	var records []*MetricRecord
 
 	// Try to extract from sum
-	dataPointAttrs := make(map[string]string)
 	if sum, ok := metricMap["sum"].(map[string]interface{}); ok {
-		if dataPoints, ok := sum["dataPoints"].([]interface{}); ok && len(dataPoints) > 0 {
-			if dp, ok := dataPoints[0].(map[string]interface{}); ok {
+		if dataPoints, ok := sum["dataPoints"].([]interface{}); ok {
+			// Process ALL data points (important for metrics like token.usage which have multiple points)
+			for _, dpInterface := range dataPoints {
+				dp, ok := dpInterface.(map[string]interface{})
+				if !ok {
+					continue
+				}
+
+				var timestamp time.Time
+				var value interface{}
+				dataPointAttrs := make(map[string]string)
+
 				// Extract data point attributes (session.id, user.id, etc. are here in Claude Code metrics)
 				if attributes, ok := dp["attributes"].([]interface{}); ok {
 					for _, attr := range attributes {
@@ -421,29 +428,31 @@ func extractMetricRecord(metricMap map[string]interface{}, resourceAttrs map[str
 				} else if asDouble, ok := dp["asDouble"].(float64); ok {
 					value = asDouble
 				}
+
+				// Merge resource attrs and data point attrs, with data point taking precedence
+				allAttrs := make(map[string]string)
+				for k, v := range resourceAttrs {
+					allAttrs[k] = v
+				}
+				for k, v := range dataPointAttrs {
+					allAttrs[k] = v
+				}
+
+				records = append(records, &MetricRecord{
+					Timestamp:      timestamp,
+					SessionID:      allAttrs["session.id"],
+					UserID:         allAttrs["user.id"],
+					OrganizationID: allAttrs["organization.id"],
+					ServiceName:    allAttrs["service.name"],
+					MetricName:     name,
+					MetricValue:    value,
+					Attributes:     allAttrs,
+				})
 			}
 		}
 	}
 
-	// Merge resource attrs and data point attrs, with data point taking precedence
-	allAttrs := make(map[string]string)
-	for k, v := range resourceAttrs {
-		allAttrs[k] = v
-	}
-	for k, v := range dataPointAttrs {
-		allAttrs[k] = v
-	}
-
-	return &MetricRecord{
-		Timestamp:      timestamp,
-		SessionID:      allAttrs["session.id"],
-		UserID:         allAttrs["user.id"],
-		OrganizationID: allAttrs["organization.id"],
-		ServiceName:    allAttrs["service.name"],
-		MetricName:     name,
-		MetricValue:    value,
-		Attributes:     allAttrs,
-	}
+	return records
 }
 
 func extractLogRecord(logMap map[string]interface{}, resourceAttrs map[string]string) *LogRecord {

@@ -9,18 +9,22 @@ import (
 )
 
 type Engine struct {
-	store         *Store
-	sessionCache  map[string]*SessionStats
-	cacheMutex    sync.RWMutex
-	flushInterval time.Duration
+	store            *Store
+	sessionCache     map[string]*SessionStats
+	modelStatsCache  map[string]map[string]*SessionModelStats  // sessionID -> model -> stats
+	toolStatsCache   map[string]map[string]*SessionToolStats   // sessionID -> toolName -> stats
+	cacheMutex       sync.RWMutex
+	flushInterval    time.Duration
 }
 
 // NewEngine creates a new aggregation engine
 func NewEngine(store *Store) *Engine {
 	engine := &Engine{
-		store:         store,
-		sessionCache:  make(map[string]*SessionStats),
-		flushInterval: 10 * time.Second,
+		store:           store,
+		sessionCache:    make(map[string]*SessionStats),
+		modelStatsCache: make(map[string]map[string]*SessionModelStats),
+		toolStatsCache:  make(map[string]map[string]*SessionToolStats),
+		flushInterval:   10 * time.Second,
 	}
 
 	// Start periodic flush
@@ -42,6 +46,7 @@ func (e *Engine) FlushCache() {
 	e.cacheMutex.Lock()
 	defer e.cacheMutex.Unlock()
 
+	// Flush session stats
 	for sessionID, stats := range e.sessionCache {
 		stats.UpdatedAt = time.Now()
 		if err := e.store.UpsertSessionStats(stats); err != nil {
@@ -49,7 +54,31 @@ func (e *Engine) FlushCache() {
 		}
 	}
 
-	log.Printf("Flushed %d session stats to database", len(e.sessionCache))
+	// Flush model stats
+	modelStatsCount := 0
+	for sessionID, modelMap := range e.modelStatsCache {
+		for _, modelStats := range modelMap {
+			if err := e.store.UpsertSessionModelStats(modelStats); err != nil {
+				log.Printf("Error upserting model stats for session %s, model %s: %v", sessionID, modelStats.Model, err)
+			} else {
+				modelStatsCount++
+			}
+		}
+	}
+
+	// Flush tool stats
+	toolStatsCount := 0
+	for sessionID, toolMap := range e.toolStatsCache {
+		for _, toolStats := range toolMap {
+			if err := e.store.UpsertSessionToolStats(toolStats); err != nil {
+				log.Printf("Error upserting tool stats for session %s, tool %s: %v", sessionID, toolStats.ToolName, err)
+			} else {
+				toolStatsCount++
+			}
+		}
+	}
+
+	log.Printf("Flushed %d session stats, %d model stats, %d tool stats to database", len(e.sessionCache), modelStatsCount, toolStatsCount)
 }
 
 // ProcessMetric processes a metric record and updates aggregations
@@ -92,10 +121,21 @@ func (e *Engine) ProcessMetric(record *MetricRecord) {
 
 	case "claude_code.cost.usage":
 		// Add to total cost
-		if cost, ok := record.MetricValue.(float64); ok {
+		var cost float64
+		if c, ok := record.MetricValue.(float64); ok {
+			cost = c
 			stats.TotalCostUSD += cost
 		} else if costInt, ok := record.MetricValue.(int64); ok {
-			stats.TotalCostUSD += float64(costInt)
+			cost = float64(costInt)
+			stats.TotalCostUSD += cost
+		}
+
+		// Track per-model cost
+		if model := record.Attributes["model"]; model != "" && cost > 0 {
+			e.updateModelStats(record.SessionID, model, func(ms *SessionModelStats) {
+				ms.CostUSD += cost
+				ms.RequestCount++
+			})
 		}
 
 	case "claude_code.token.usage":
@@ -118,6 +158,22 @@ func (e *Engine) ProcessMetric(record *MetricRecord) {
 			stats.TotalCacheReadTokens += tokenValue
 		case "cacheCreation":
 			stats.TotalCacheCreationTokens += tokenValue
+		}
+
+		// Track per-model tokens
+		if model := record.Attributes["model"]; model != "" && tokenValue > 0 {
+			e.updateModelStats(record.SessionID, model, func(ms *SessionModelStats) {
+				switch tokenType {
+				case "input":
+					ms.InputTokens += tokenValue
+				case "output":
+					ms.OutputTokens += tokenValue
+				case "cacheRead":
+					ms.CacheReadTokens += tokenValue
+				case "cacheCreation":
+					ms.CacheCreationTokens += tokenValue
+				}
+			})
 		}
 
 	case "claude_code.active_time.total":
@@ -167,9 +223,21 @@ func (e *Engine) ProcessLog(record *LogRecord) {
 		stats.APIRequestCount++
 
 		// Extract latency if available
-		if durationMS := extractFloat(record.Attributes, "duration_ms"); durationMS > 0 {
+		durationMS := extractFloat(record.Attributes, "duration_ms")
+		if durationMS > 0 {
 			stats.TotalAPILatencyMS += durationMS
 			stats.AvgAPILatencyMS = stats.TotalAPILatencyMS / float64(stats.APIRequestCount)
+		}
+
+		// Track per-model latency
+		if model := extractString(record.Attributes, "model"); model != "" && durationMS > 0 {
+			e.updateModelStats(record.SessionID, model, func(ms *SessionModelStats) {
+				ms.TotalLatencyMS += durationMS
+				// Request count is tracked in cost.usage, so we calculate avg based on that
+				if ms.RequestCount > 0 {
+					ms.AvgLatencyMS = ms.TotalLatencyMS / float64(ms.RequestCount)
+				}
+			})
 		}
 
 	} else if containsString(record.Body, "claude_code.user_prompt") {
@@ -185,15 +253,38 @@ func (e *Engine) ProcessLog(record *LogRecord) {
 		stats.ToolExecutionCount++
 
 		// Track success/failure
-		if success := extractBool(record.Attributes, "success"); success {
+		success := extractBool(record.Attributes, "success")
+		if success {
 			stats.ToolSuccessCount++
 		} else {
 			stats.ToolFailureCount++
 		}
 
 		// Track tool name
-		if toolName := extractString(record.Attributes, "tool_name"); toolName != "" {
+		toolName := extractString(record.Attributes, "tool_name")
+		if toolName != "" {
 			e.addToToolsUsed(stats, toolName)
+
+			// Track per-tool stats
+			durationMS := extractFloat(record.Attributes, "duration_ms")
+			e.updateToolStats(record.SessionID, toolName, func(ts *SessionToolStats) {
+				ts.ExecutionCount++
+				if success {
+					ts.SuccessCount++
+				} else {
+					ts.FailureCount++
+				}
+				if durationMS > 0 {
+					ts.TotalDurationMS += durationMS
+					ts.AvgDurationMS = ts.TotalDurationMS / float64(ts.ExecutionCount)
+					if ts.MinDurationMS == 0 || durationMS < ts.MinDurationMS {
+						ts.MinDurationMS = durationMS
+					}
+					if durationMS > ts.MaxDurationMS {
+						ts.MaxDurationMS = durationMS
+					}
+				}
+			})
 		}
 	}
 }
@@ -341,4 +432,46 @@ func extractBool(attrs map[string]interface{}, key string) bool {
 		}
 	}
 	return false
+}
+
+// updateModelStats gets or creates model stats for a session and applies the update function
+func (e *Engine) updateModelStats(sessionID, model string, updateFn func(*SessionModelStats)) {
+	// Get or create session-level map
+	if e.modelStatsCache[sessionID] == nil {
+		e.modelStatsCache[sessionID] = make(map[string]*SessionModelStats)
+	}
+
+	// Get or create model stats
+	modelStats, exists := e.modelStatsCache[sessionID][model]
+	if !exists {
+		modelStats = &SessionModelStats{
+			SessionID: sessionID,
+			Model:     model,
+		}
+		e.modelStatsCache[sessionID][model] = modelStats
+	}
+
+	// Apply update
+	updateFn(modelStats)
+}
+
+// updateToolStats gets or creates tool stats for a session and applies the update function
+func (e *Engine) updateToolStats(sessionID, toolName string, updateFn func(*SessionToolStats)) {
+	// Get or create session-level map
+	if e.toolStatsCache[sessionID] == nil {
+		e.toolStatsCache[sessionID] = make(map[string]*SessionToolStats)
+	}
+
+	// Get or create tool stats
+	toolStats, exists := e.toolStatsCache[sessionID][toolName]
+	if !exists {
+		toolStats = &SessionToolStats{
+			SessionID: sessionID,
+			ToolName:  toolName,
+		}
+		e.toolStatsCache[sessionID][toolName] = toolStats
+	}
+
+	// Apply update
+	updateFn(toolStats)
 }
