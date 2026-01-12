@@ -23,13 +23,13 @@ A lightweight OpenTelemetry Protocol (OTLP) collector and aggregation system bui
 ## Installation
 
 ### Prerequisites
-- Go 1.21 or later
+- Go 1.25 or later
 - SQLite support (via cgo)
 
 ### Build from Source
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/zmack/otis
 cd otis
 go build
 ```
@@ -361,6 +361,7 @@ otis/
 │   └── config.go        # Configuration management
 ├── collector/
 │   ├── server.go        # HTTP server
+│   ├── writer.go        # JSONL file writer
 │   ├── traces.go        # Trace handler
 │   ├── metrics.go       # Metrics handler
 │   └── logs.go          # Logs handler
@@ -372,6 +373,7 @@ otis/
 │   ├── api.go           # REST API handlers
 │   ├── store_test.go    # Store tests
 │   └── engine_test.go   # Engine tests
+├── test/                # Test utilities
 ├── data/                # JSONL output directory
 └── db/                  # SQLite database directory
 ```

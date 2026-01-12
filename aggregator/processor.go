@@ -386,11 +386,28 @@ func extractMetricRecord(metricMap map[string]interface{}, resourceAttrs map[str
 	var value interface{}
 
 	// Try to extract from sum
+	dataPointAttrs := make(map[string]string)
 	if sum, ok := metricMap["sum"].(map[string]interface{}); ok {
-		if dataPoints, ok := sum["dataPoints"].([]interface{});
-
- ok && len(dataPoints) > 0 {
+		if dataPoints, ok := sum["dataPoints"].([]interface{}); ok && len(dataPoints) > 0 {
 			if dp, ok := dataPoints[0].(map[string]interface{}); ok {
+				// Extract data point attributes (session.id, user.id, etc. are here in Claude Code metrics)
+				if attributes, ok := dp["attributes"].([]interface{}); ok {
+					for _, attr := range attributes {
+						attrMap, ok := attr.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						key, _ := attrMap["key"].(string)
+						valueMap, ok := attrMap["value"].(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if strValue, ok := valueMap["stringValue"].(string); ok {
+							dataPointAttrs[key] = strValue
+						}
+					}
+				}
+
 				if timeStr, ok := dp["timeUnixNano"].(string); ok {
 					// Parse nanoseconds timestamp
 					var nanos int64
@@ -408,15 +425,24 @@ func extractMetricRecord(metricMap map[string]interface{}, resourceAttrs map[str
 		}
 	}
 
+	// Merge resource attrs and data point attrs, with data point taking precedence
+	allAttrs := make(map[string]string)
+	for k, v := range resourceAttrs {
+		allAttrs[k] = v
+	}
+	for k, v := range dataPointAttrs {
+		allAttrs[k] = v
+	}
+
 	return &MetricRecord{
 		Timestamp:      timestamp,
-		SessionID:      resourceAttrs["session.id"],
-		UserID:         resourceAttrs["user.id"],
-		OrganizationID: resourceAttrs["organization.id"],
-		ServiceName:    resourceAttrs["service.name"],
+		SessionID:      allAttrs["session.id"],
+		UserID:         allAttrs["user.id"],
+		OrganizationID: allAttrs["organization.id"],
+		ServiceName:    allAttrs["service.name"],
 		MetricName:     name,
 		MetricValue:    value,
-		Attributes:     resourceAttrs,
+		Attributes:     allAttrs,
 	}
 }
 
