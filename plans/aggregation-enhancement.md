@@ -1,5 +1,25 @@
 # Otis Aggregation Enhancement Plan
 
+**Last Updated:** 2026-01-11
+**Current Phase:** Phase 1 (80% complete - API layer needed)
+
+## Quick Status
+
+**What's Working:**
+- ✅ Per-model cost/tokens/latency tracking in database
+- ✅ Per-tool execution/success/duration tracking in database
+- ✅ Engine aggregates data correctly from OTEL events
+- ✅ Data flushes every 10s to SQLite tables
+
+**What's Missing (to complete Phase 1):**
+- ❌ API endpoints to query per-model and per-tool breakdowns
+- ❌ Store methods to retrieve aggregated stats
+- ❌ Latency histograms for percentile calculations
+
+**Next Action:** Add 4 API endpoints and 4 store query methods (see "Next Steps" section)
+
+---
+
 ## Context
 
 User wants comprehensive analytics with all granularities:
@@ -37,30 +57,46 @@ User wants comprehensive analytics with all granularities:
 - `claude_code.active_time.total`: Active time
 - `claude_code.session.count`: Session tracking
 
-## Implementation Areas to Design
+## Current Implementation Status (2026-01-11)
 
-### Phase 1: Enhanced Session Aggregations
-- [ ] Per-model cost/token breakdown
-- [ ] Tool success rate calculation
-- [ ] Error categorization and tracking
-- [ ] Better performance metrics (P50, P95, P99 latencies)
+### Phase 1: Enhanced Session Aggregations - 80% COMPLETE
+- [x] Database schema: `session_model_stats` and `session_tool_stats` tables
+- [x] Data models: SessionModelStats, SessionToolStats in models.go
+- [x] Per-model cost/token breakdown aggregation in engine.go
+- [x] Per-tool success/failure tracking in engine.go
+- [x] Flush logic writes to all dimension tables
+- [x] Per-model latency tracking (total, avg)
+- [x] Per-tool duration tracking (total, avg, min, max)
+- [x] **Test coverage: 12 tests passing** (5 new tests added)
+  - `TestSessionModelStatsUpsert` - store layer model stats
+  - `TestSessionToolStatsUpsert` - store layer tool stats
+  - `TestEnginePerModelTracking` - engine tracks per-model metrics
+  - `TestEnginePerToolTracking` - engine tracks per-tool metrics
+  - `TestEngineMultipleModels` - multiple models in one session
+- [ ] **TODO:** Store query methods (GetSessionModelStats, GetSessionToolStats)
+- [ ] **TODO:** API endpoints to expose per-model/tool breakdowns
+- [ ] **TODO:** Latency histogram for percentile approximation (p50, p95, p99)
 
-### Phase 2: User & Org Aggregations
+### Phase 2: User & Org Aggregations - NOT STARTED
 - [ ] User-level rollups from sessions
 - [ ] Org-level rollups from users
 - [ ] Top users/models/tools queries
+- [ ] Daily aggregation tables (different from current user_stats/org_stats schemas)
 
-### Phase 3: Time-Series Aggregations
+### Phase 3: Time-Series Aggregations - NOT STARTED
 - [ ] Daily aggregations
 - [ ] Weekly aggregations
 - [ ] Monthly aggregations
 - [ ] Retention and archival strategy
 
-### Phase 4: API Enhancements
-- [ ] New endpoints for time-series queries
-- [ ] Per-model breakdown endpoints
-- [ ] Tool analytics endpoints
-- [ ] Error analytics endpoints
+### Phase 4: API Enhancements - PARTIALLY STARTED
+- [x] Basic endpoints: /api/stats/session, /api/stats/user, /api/stats/org
+- [ ] **TODO:** GET /api/stats/models - model breakdown across sessions
+- [ ] **TODO:** GET /api/stats/tools - tool performance analytics
+- [ ] **TODO:** GET /api/stats/session/{id}/models - per-session model breakdown
+- [ ] **TODO:** GET /api/stats/session/{id}/tools - per-session tool breakdown
+- [ ] **TODO:** Time window support (?window=7d, ?start=X&end=Y)
+- [ ] **TODO:** Error analytics endpoints
 
 ## Critical Files
 
@@ -131,37 +167,40 @@ org_daily_stats (
 )
 ```
 
-### Implementation Phases (6 Weeks)
+### Implementation Phases - Progress Tracking
 
-**Phase 1: Enhanced Session Tracking** (Week 1-2)
-- Add `session_model_stats` and `session_tool_stats` tables
-- Track per-model costs/tokens in ProcessMetric
-- Track per-tool performance in ProcessLog
-- Update Engine.FlushCache() to write dimension tables
+**Phase 1: Enhanced Session Tracking** - 80% DONE ✅
+- ✅ Added `session_model_stats` and `session_tool_stats` tables (store.go:145-178)
+- ✅ Track per-model costs/tokens in ProcessMetric (engine.go:134-177)
+- ✅ Track per-tool performance in ProcessLog (engine.go:264-288)
+- ✅ Updated Engine.FlushCache() to write dimension tables (engine.go:57-79)
+- ❌ **REMAINING:** Add store query methods and API endpoints (see Next Steps)
+- ❌ **REMAINING:** Add latency histogram table and percentile calculation
 
-**Phase 2: Daily Aggregations** (Week 3)
-- Add `user_daily_stats` and `org_daily_stats` tables
-- Implement UpdateDailyStats() called during flush
-- Use UPSERT pattern for idempotent updates
-- Add API endpoints for time-series queries
+**Phase 2: Daily Aggregations** - NOT STARTED
+- ❌ Add `user_daily_stats` and `org_daily_stats` tables
+- ❌ Implement UpdateDailyStats() called during flush
+- ❌ Use UPSERT pattern for idempotent updates
+- ❌ Add API endpoints for time-series queries
 
-**Phase 3: Percentile Support** (Week 4)
-- Add `session_latency_histogram` table
-- Implement histogram bucket tracking (9 buckets)
-- Add percentile calculation functions (p50, p95, p99)
-- Include percentiles in API responses
+**Phase 3: Percentile Support** - NOT STARTED
+- ❌ Add `session_latency_histogram` table
+- ❌ Implement histogram bucket tracking (9 buckets)
+- ❌ Add percentile calculation functions (p50, p95, p99)
+- ❌ Include percentiles in API responses
 
-**Phase 4: API Enhancements** (Week 5)
-- GET /api/stats/models - model breakdown across sessions
-- GET /api/stats/tools - tool performance analytics
-- GET /api/stats/user/{id}?window=7d - time window support
-- GET /api/stats/org/{id}/trends - time-series data
+**Phase 4: API Enhancements** - 20% DONE
+- ✅ Basic endpoints exist: /api/stats/session, /api/stats/user, /api/stats/org (api.go)
+- ❌ GET /api/stats/models - model breakdown across sessions
+- ❌ GET /api/stats/tools - tool performance analytics
+- ❌ GET /api/stats/user/{id}?window=7d - time window support
+- ❌ GET /api/stats/org/{id}/trends - time-series data
 
-**Phase 5: Batch Jobs & Optimization** (Week 6)
-- Nightly reconciliation job (verify daily aggregates)
-- Weekly/monthly rollup tables
-- Data archival strategy (>90 days)
-- Query performance optimization
+**Phase 5: Batch Jobs & Optimization** - NOT STARTED
+- ❌ Nightly reconciliation job (verify daily aggregates)
+- ❌ Weekly/monthly rollup tables
+- ❌ Data archival strategy (>90 days)
+- ❌ Query performance optimization
 
 ### Migration Strategy
 
@@ -313,10 +352,142 @@ EOF
 
 ---
 
-## Next Steps After Approval
+## Next Steps
 
-1. Create feature branch: `jj new -m "Phase 1: Add session model and tool breakdowns"`
-2. Start with Phase 1 implementation
-3. Write tests alongside code (aggregator/*_test.go)
-4. Update TESTING.md with new verification steps
-5. Iterate through phases with commits per phase
+### Immediate (Complete Phase 1):
+
+1. **Add store query methods** (aggregator/store.go):
+   - `GetSessionModelStats(sessionID string) ([]*SessionModelStats, error)`
+   - `GetSessionToolStats(sessionID string) ([]*SessionToolStats, error)`
+   - `GetAllModelStats(limit int) (map[string]*ModelAggregates, error)` - aggregate across all sessions
+   - `GetAllToolStats(limit int) (map[string]*ToolAggregates, error)` - aggregate across all sessions
+
+2. **Add API endpoints** (aggregator/api.go):
+   - `GET /api/stats/session/{id}/models` - per-session model breakdown
+   - `GET /api/stats/session/{id}/tools` - per-session tool breakdown
+   - `GET /api/stats/models` - global model analytics
+   - `GET /api/stats/tools` - global tool analytics
+
+3. **Test Phase 1 completion**:
+   - Run test_otis.sh to generate telemetry
+   - Query new endpoints and verify data
+   - Update TESTING.md with verification steps
+
+### Later (Phase 2-5):
+
+4. Add histogram tables and percentile calculations (Phase 1 completion)
+5. Implement daily aggregations (Phase 2)
+6. Add time-series endpoints (Phase 3-4)
+7. Build reconciliation jobs (Phase 5)
+
+---
+
+## Example API Responses (Target for Phase 1 Completion)
+
+### GET /api/stats/session/{id}/models
+```json
+{
+  "session_id": "abc123",
+  "models": [
+    {
+      "model": "claude-sonnet-4-5",
+      "cost_usd": 0.0042,
+      "tokens": {
+        "input": 1500,
+        "output": 800,
+        "cache_read": 500,
+        "cache_creation": 200
+      },
+      "request_count": 5,
+      "avg_latency_ms": 1250.5
+    }
+  ]
+}
+```
+
+### GET /api/stats/session/{id}/tools
+```json
+{
+  "session_id": "abc123",
+  "tools": [
+    {
+      "tool_name": "Read",
+      "execution_count": 12,
+      "success_count": 12,
+      "failure_count": 0,
+      "duration": {
+        "avg_ms": 45.2,
+        "min_ms": 12.3,
+        "max_ms": 120.8,
+        "total_ms": 542.4
+      },
+      "success_rate": 1.0
+    },
+    {
+      "tool_name": "Bash",
+      "execution_count": 3,
+      "success_count": 2,
+      "failure_count": 1,
+      "duration": {
+        "avg_ms": 250.5,
+        "min_ms": 100.2,
+        "max_ms": 500.1,
+        "total_ms": 751.5
+      },
+      "success_rate": 0.67
+    }
+  ]
+}
+```
+
+### GET /api/stats/models
+```json
+{
+  "models": [
+    {
+      "model": "claude-sonnet-4-5",
+      "total_sessions": 45,
+      "total_cost_usd": 0.183,
+      "total_requests": 230,
+      "total_tokens": 125000,
+      "avg_cost_per_session": 0.0041,
+      "avg_latency_ms": 1340.2
+    },
+    {
+      "model": "claude-opus-4-5",
+      "total_sessions": 3,
+      "total_cost_usd": 0.025,
+      "total_requests": 8,
+      "total_tokens": 8500,
+      "avg_cost_per_session": 0.0083,
+      "avg_latency_ms": 2100.5
+    }
+  ]
+}
+```
+
+### GET /api/stats/tools
+```json
+{
+  "tools": [
+    {
+      "tool_name": "Read",
+      "total_executions": 540,
+      "total_successes": 538,
+      "total_failures": 2,
+      "success_rate": 0.996,
+      "avg_duration_ms": 42.3,
+      "used_in_sessions": 45
+    },
+    {
+      "tool_name": "Bash",
+      "total_executions": 85,
+      "total_successes": 80,
+      "total_failures": 5,
+      "success_rate": 0.941,
+      "avg_duration_ms": 320.5,
+      "used_in_sessions": 32
+    }
+  ]
+}
+```
