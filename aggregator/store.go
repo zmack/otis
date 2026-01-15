@@ -525,3 +525,182 @@ func (s *Store) GetOrgSessionStats(orgID string, limit int) ([]*SessionStats, er
 
 	return sessions, rows.Err()
 }
+
+// GetSessionModelStats retrieves per-model statistics for a specific session
+func (s *Store) GetSessionModelStats(sessionID string) ([]*SessionModelStats, error) {
+	query := `
+	SELECT session_id, model, cost_usd, input_tokens, output_tokens,
+		cache_read_tokens, cache_creation_tokens, request_count,
+		total_latency_ms, avg_latency_ms
+	FROM session_model_stats
+	WHERE session_id = ?
+	ORDER BY cost_usd DESC
+	`
+
+	rows, err := s.db.Query(query, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var modelStats []*SessionModelStats
+	for rows.Next() {
+		var stats SessionModelStats
+		err := rows.Scan(
+			&stats.SessionID, &stats.Model, &stats.CostUSD,
+			&stats.InputTokens, &stats.OutputTokens,
+			&stats.CacheReadTokens, &stats.CacheCreationTokens,
+			&stats.RequestCount, &stats.TotalLatencyMS, &stats.AvgLatencyMS,
+		)
+		if err != nil {
+			return nil, err
+		}
+		modelStats = append(modelStats, &stats)
+	}
+
+	return modelStats, rows.Err()
+}
+
+// GetSessionToolStats retrieves per-tool statistics for a specific session
+func (s *Store) GetSessionToolStats(sessionID string) ([]*SessionToolStats, error) {
+	query := `
+	SELECT session_id, tool_name, execution_count, success_count, failure_count,
+		total_duration_ms, avg_duration_ms, min_duration_ms, max_duration_ms
+	FROM session_tool_stats
+	WHERE session_id = ?
+	ORDER BY execution_count DESC
+	`
+
+	rows, err := s.db.Query(query, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var toolStats []*SessionToolStats
+	for rows.Next() {
+		var stats SessionToolStats
+		err := rows.Scan(
+			&stats.SessionID, &stats.ToolName,
+			&stats.ExecutionCount, &stats.SuccessCount, &stats.FailureCount,
+			&stats.TotalDurationMS, &stats.AvgDurationMS,
+			&stats.MinDurationMS, &stats.MaxDurationMS,
+		)
+		if err != nil {
+			return nil, err
+		}
+		toolStats = append(toolStats, &stats)
+	}
+
+	return toolStats, rows.Err()
+}
+
+// ModelAggregates represents aggregated statistics for a model across all sessions
+type ModelAggregates struct {
+	Model                    string
+	TotalSessions            int
+	TotalCostUSD             float64
+	TotalRequests            int
+	TotalInputTokens         int64
+	TotalOutputTokens        int64
+	TotalCacheReadTokens     int64
+	TotalCacheCreationTokens int64
+	AvgCostPerSession        float64
+	AvgLatencyMS             float64
+}
+
+// GetAllModelStats retrieves aggregated statistics across all models
+func (s *Store) GetAllModelStats(limit int) ([]*ModelAggregates, error) {
+	query := `
+	SELECT
+		model,
+		COUNT(DISTINCT session_id) as total_sessions,
+		SUM(cost_usd) as total_cost,
+		SUM(request_count) as total_requests,
+		SUM(input_tokens) as total_input_tokens,
+		SUM(output_tokens) as total_output_tokens,
+		SUM(cache_read_tokens) as total_cache_read_tokens,
+		SUM(cache_creation_tokens) as total_cache_creation_tokens,
+		AVG(cost_usd) as avg_cost_per_session,
+		AVG(avg_latency_ms) as avg_latency_ms
+	FROM session_model_stats
+	GROUP BY model
+	ORDER BY total_cost DESC
+	LIMIT ?
+	`
+
+	rows, err := s.db.Query(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var aggregates []*ModelAggregates
+	for rows.Next() {
+		var agg ModelAggregates
+		err := rows.Scan(
+			&agg.Model, &agg.TotalSessions, &agg.TotalCostUSD,
+			&agg.TotalRequests, &agg.TotalInputTokens, &agg.TotalOutputTokens,
+			&agg.TotalCacheReadTokens, &agg.TotalCacheCreationTokens,
+			&agg.AvgCostPerSession, &agg.AvgLatencyMS,
+		)
+		if err != nil {
+			return nil, err
+		}
+		aggregates = append(aggregates, &agg)
+	}
+
+	return aggregates, rows.Err()
+}
+
+// ToolAggregates represents aggregated statistics for a tool across all sessions
+type ToolAggregates struct {
+	ToolName        string
+	TotalExecutions int
+	TotalSuccesses  int
+	TotalFailures   int
+	SuccessRate     float64
+	AvgDurationMS   float64
+	SessionsUsedIn  int
+}
+
+// GetAllToolStats retrieves aggregated statistics across all tools
+func (s *Store) GetAllToolStats(limit int) ([]*ToolAggregates, error) {
+	query := `
+	SELECT
+		tool_name,
+		SUM(execution_count) as total_executions,
+		SUM(success_count) as total_successes,
+		SUM(failure_count) as total_failures,
+		CAST(SUM(success_count) AS REAL) / CAST(SUM(execution_count) AS REAL) as success_rate,
+		AVG(avg_duration_ms) as avg_duration_ms,
+		COUNT(DISTINCT session_id) as sessions_used_in
+	FROM session_tool_stats
+	GROUP BY tool_name
+	ORDER BY total_executions DESC
+	LIMIT ?
+	`
+
+	rows, err := s.db.Query(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var aggregates []*ToolAggregates
+	for rows.Next() {
+		var agg ToolAggregates
+		err := rows.Scan(
+			&agg.ToolName, &agg.TotalExecutions,
+			&agg.TotalSuccesses, &agg.TotalFailures,
+			&agg.SuccessRate, &agg.AvgDurationMS,
+			&agg.SessionsUsedIn,
+		)
+		if err != nil {
+			return nil, err
+		}
+		aggregates = append(aggregates, &agg)
+	}
+
+	return aggregates, rows.Err()
+}

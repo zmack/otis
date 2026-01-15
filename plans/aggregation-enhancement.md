@@ -1,7 +1,30 @@
 # Otis Aggregation Enhancement Plan
 
-**Last Updated:** 2026-01-11
-**Current Phase:** Phase 1 (80% complete - API layer needed)
+**Last Updated:** 2026-01-14
+**Current Phase:** Phase 1 (95% complete - only histograms remaining)
+
+## Last Session Summary (2026-01-14)
+
+**What we did:**
+1. ✅ Added 4 store query methods to aggregator/store.go:
+   - `GetSessionModelStats(sessionID)` - per-session model breakdown
+   - `GetSessionToolStats(sessionID)` - per-session tool breakdown
+   - `GetAllModelStats(limit)` - global model aggregates
+   - `GetAllToolStats(limit)` - global tool aggregates
+2. ✅ Added 4 new API endpoints to aggregator/api.go:
+   - `GET /api/stats/session/{id}/models` - per-session model stats
+   - `GET /api/stats/session/{id}/tools` - per-session tool stats
+   - `GET /api/stats/models` - global model analytics
+   - `GET /api/stats/tools` - global tool analytics
+3. ✅ All 12 unit tests passing
+4. ✅ Manual API testing verified all endpoints work correctly
+
+**Phase 1 is essentially COMPLETE!** Only optional histogram/percentile feature remains.
+
+**Ready for next session:**
+- Phase 1: Add latency histograms for p50/p95/p99 (optional enhancement)
+- Phase 2: Start daily aggregations (user_daily_stats, org_daily_stats)
+- Phase 3-5: Time-series, API enhancements, batch jobs
 
 ## Quick Status
 
@@ -10,13 +33,16 @@
 - ✅ Per-tool execution/success/duration tracking in database
 - ✅ Engine aggregates data correctly from OTEL events
 - ✅ Data flushes every 10s to SQLite tables
+- ✅ **NEW:** 4 API endpoints for model/tool analytics
+- ✅ **NEW:** Store query methods for aggregated stats
+- ✅ **NEW:** Per-session and global breakdowns working
 
-**What's Missing (to complete Phase 1):**
-- ❌ API endpoints to query per-model and per-tool breakdowns
-- ❌ Store methods to retrieve aggregated stats
-- ❌ Latency histograms for percentile calculations
+**What's Missing (optional for Phase 1):**
+- ⚠️ Latency histograms for percentile calculations (p50, p95, p99)
 
-**Next Action:** Add 4 API endpoints and 4 store query methods (see "Next Steps" section)
+**Next Actions:**
+- Option 1: Move to Phase 2 (daily aggregations)
+- Option 2: Complete Phase 1 with histogram/percentile support
 
 ---
 
@@ -59,7 +85,7 @@ User wants comprehensive analytics with all granularities:
 
 ## Current Implementation Status (2026-01-11)
 
-### Phase 1: Enhanced Session Aggregations - 80% COMPLETE
+### Phase 1: Enhanced Session Aggregations - 95% COMPLETE ✅
 - [x] Database schema: `session_model_stats` and `session_tool_stats` tables
 - [x] Data models: SessionModelStats, SessionToolStats in models.go
 - [x] Per-model cost/token breakdown aggregation in engine.go
@@ -73,9 +99,17 @@ User wants comprehensive analytics with all granularities:
   - `TestEnginePerModelTracking` - engine tracks per-model metrics
   - `TestEnginePerToolTracking` - engine tracks per-tool metrics
   - `TestEngineMultipleModels` - multiple models in one session
-- [ ] **TODO:** Store query methods (GetSessionModelStats, GetSessionToolStats)
-- [ ] **TODO:** API endpoints to expose per-model/tool breakdowns
-- [ ] **TODO:** Latency histogram for percentile approximation (p50, p95, p99)
+- [x] **Store query methods** (aggregator/store.go:530-708)
+  - `GetSessionModelStats(sessionID)` - returns per-model breakdown for a session
+  - `GetSessionToolStats(sessionID)` - returns per-tool breakdown for a session
+  - `GetAllModelStats(limit)` - returns aggregated model stats across all sessions
+  - `GetAllToolStats(limit)` - returns aggregated tool stats across all sessions
+- [x] **API endpoints** (aggregator/api.go:450-617)
+  - `GET /api/stats/session/{id}/models` - per-session model breakdown
+  - `GET /api/stats/session/{id}/tools` - per-session tool breakdown
+  - `GET /api/stats/models?limit=50` - global model analytics
+  - `GET /api/stats/tools?limit=50` - global tool analytics
+- [ ] **OPTIONAL:** Latency histogram for percentile approximation (p50, p95, p99)
 
 ### Phase 2: User & Org Aggregations - NOT STARTED
 - [ ] User-level rollups from sessions
@@ -89,12 +123,12 @@ User wants comprehensive analytics with all granularities:
 - [ ] Monthly aggregations
 - [ ] Retention and archival strategy
 
-### Phase 4: API Enhancements - PARTIALLY STARTED
+### Phase 4: API Enhancements - 60% COMPLETE
 - [x] Basic endpoints: /api/stats/session, /api/stats/user, /api/stats/org
-- [ ] **TODO:** GET /api/stats/models - model breakdown across sessions
-- [ ] **TODO:** GET /api/stats/tools - tool performance analytics
-- [ ] **TODO:** GET /api/stats/session/{id}/models - per-session model breakdown
-- [ ] **TODO:** GET /api/stats/session/{id}/tools - per-session tool breakdown
+- [x] GET /api/stats/models - model breakdown across sessions ✅
+- [x] GET /api/stats/tools - tool performance analytics ✅
+- [x] GET /api/stats/session/{id}/models - per-session model breakdown ✅
+- [x] GET /api/stats/session/{id}/tools - per-session tool breakdown ✅
 - [ ] **TODO:** Time window support (?window=7d, ?start=X&end=Y)
 - [ ] **TODO:** Error analytics endpoints
 

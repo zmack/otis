@@ -31,6 +31,8 @@ func NewAPIServer(port int, store *Store, engine *Engine) *APIServer {
 	mux.HandleFunc("/api/stats/session/", server.handleSessionStats)
 	mux.HandleFunc("/api/stats/user/", server.handleUserStats)
 	mux.HandleFunc("/api/stats/org/", server.handleOrgStats)
+	mux.HandleFunc("/api/stats/models", server.handleModelsStats)
+	mux.HandleFunc("/api/stats/tools", server.handleToolsStats)
 	mux.HandleFunc("/api/health", server.handleHealth)
 
 	server.httpServer = &http.Server{
@@ -48,8 +50,12 @@ func (s *APIServer) Start() error {
 	log.Printf("Starting aggregation API server on port %d", s.port)
 	log.Printf("Endpoints:")
 	log.Printf("  GET http://localhost:%d/api/stats/session/{session_id}", s.port)
+	log.Printf("  GET http://localhost:%d/api/stats/session/{session_id}/models", s.port)
+	log.Printf("  GET http://localhost:%d/api/stats/session/{session_id}/tools", s.port)
 	log.Printf("  GET http://localhost:%d/api/stats/user/{user_id}?limit=10", s.port)
 	log.Printf("  GET http://localhost:%d/api/stats/org/{org_id}?limit=10", s.port)
+	log.Printf("  GET http://localhost:%d/api/stats/models?limit=50", s.port)
+	log.Printf("  GET http://localhost:%d/api/stats/tools?limit=50", s.port)
 	log.Printf("  GET http://localhost:%d/api/health", s.port)
 
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -64,20 +70,37 @@ func (s *APIServer) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
 }
 
-// handleSessionStats handles GET /api/stats/session/{session_id}
+// handleSessionStats handles GET /api/stats/session/{session_id}[/models|/tools]
 func (s *APIServer) handleSessionStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Extract session ID from path
+	// Extract path after /api/stats/session/
 	path := strings.TrimPrefix(r.URL.Path, "/api/stats/session/")
-	sessionID := strings.TrimSpace(path)
+	parts := strings.Split(path, "/")
 
-	if sessionID == "" {
+	if len(parts) == 0 || parts[0] == "" {
 		http.Error(w, "Session ID required", http.StatusBadRequest)
 		return
+	}
+
+	sessionID := parts[0]
+
+	// Check for sub-routes
+	if len(parts) > 1 {
+		switch parts[1] {
+		case "models":
+			s.handleSessionModels(w, r, sessionID)
+			return
+		case "tools":
+			s.handleSessionTools(w, r, sessionID)
+			return
+		default:
+			http.Error(w, "Unknown sub-resource", http.StatusNotFound)
+			return
+		}
 	}
 
 	// Get session stats from database
@@ -426,4 +449,173 @@ func buildSessionList(sessions []*SessionStats) []map[string]interface{} {
 		}
 	}
 	return result
+}
+
+// handleSessionModels handles GET /api/stats/session/{session_id}/models
+func (s *APIServer) handleSessionModels(w http.ResponseWriter, r *http.Request, sessionID string) {
+	modelStats, err := s.store.GetSessionModelStats(sessionID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error retrieving model stats: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response
+	models := make([]map[string]interface{}, len(modelStats))
+	for i, ms := range modelStats {
+		models[i] = map[string]interface{}{
+			"model": ms.Model,
+			"cost_usd": ms.CostUSD,
+			"tokens": map[string]interface{}{
+				"input":          ms.InputTokens,
+				"output":         ms.OutputTokens,
+				"cache_read":     ms.CacheReadTokens,
+				"cache_creation": ms.CacheCreationTokens,
+				"total":          ms.InputTokens + ms.OutputTokens + ms.CacheReadTokens,
+			},
+			"request_count":  ms.RequestCount,
+			"avg_latency_ms": ms.AvgLatencyMS,
+		}
+	}
+
+	response := map[string]interface{}{
+		"session_id": sessionID,
+		"models":     models,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleSessionTools handles GET /api/stats/session/{session_id}/tools
+func (s *APIServer) handleSessionTools(w http.ResponseWriter, r *http.Request, sessionID string) {
+	toolStats, err := s.store.GetSessionToolStats(sessionID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error retrieving tool stats: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response
+	tools := make([]map[string]interface{}, len(toolStats))
+	for i, ts := range toolStats {
+		successRate := 0.0
+		if ts.ExecutionCount > 0 {
+			successRate = float64(ts.SuccessCount) / float64(ts.ExecutionCount)
+		}
+
+		tools[i] = map[string]interface{}{
+			"tool_name":       ts.ToolName,
+			"execution_count": ts.ExecutionCount,
+			"success_count":   ts.SuccessCount,
+			"failure_count":   ts.FailureCount,
+			"duration": map[string]interface{}{
+				"avg_ms":   ts.AvgDurationMS,
+				"min_ms":   ts.MinDurationMS,
+				"max_ms":   ts.MaxDurationMS,
+				"total_ms": ts.TotalDurationMS,
+			},
+			"success_rate": successRate,
+		}
+	}
+
+	response := map[string]interface{}{
+		"session_id": sessionID,
+		"tools":      tools,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleModelsStats handles GET /api/stats/models
+func (s *APIServer) handleModelsStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get limit from query params
+	limit := 50
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	modelAggs, err := s.store.GetAllModelStats(limit)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error retrieving model stats: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response
+	models := make([]map[string]interface{}, len(modelAggs))
+	for i, ma := range modelAggs {
+		models[i] = map[string]interface{}{
+			"model":             ma.Model,
+			"total_sessions":    ma.TotalSessions,
+			"total_cost_usd":    ma.TotalCostUSD,
+			"total_requests":    ma.TotalRequests,
+			"total_tokens": map[string]interface{}{
+				"input":          ma.TotalInputTokens,
+				"output":         ma.TotalOutputTokens,
+				"cache_read":     ma.TotalCacheReadTokens,
+				"cache_creation": ma.TotalCacheCreationTokens,
+				"total":          ma.TotalInputTokens + ma.TotalOutputTokens + ma.TotalCacheReadTokens,
+			},
+			"avg_cost_per_session": ma.AvgCostPerSession,
+			"avg_latency_ms":       ma.AvgLatencyMS,
+		}
+	}
+
+	response := map[string]interface{}{
+		"models": models,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleToolsStats handles GET /api/stats/tools
+func (s *APIServer) handleToolsStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get limit from query params
+	limit := 50
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	toolAggs, err := s.store.GetAllToolStats(limit)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error retrieving tool stats: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response
+	tools := make([]map[string]interface{}, len(toolAggs))
+	for i, ta := range toolAggs {
+		tools[i] = map[string]interface{}{
+			"tool_name":        ta.ToolName,
+			"total_executions": ta.TotalExecutions,
+			"total_successes":  ta.TotalSuccesses,
+			"total_failures":   ta.TotalFailures,
+			"success_rate":     ta.SuccessRate,
+			"avg_duration_ms":  ta.AvgDurationMS,
+			"used_in_sessions": ta.SessionsUsedIn,
+		}
+	}
+
+	response := map[string]interface{}{
+		"tools": tools,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
