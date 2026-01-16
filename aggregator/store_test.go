@@ -187,7 +187,7 @@ func TestProcessingState(t *testing.T) {
 	}
 
 	// Update state
-	err = store.UpdateProcessingState("test.jsonl", 42, 1024)
+	err = store.UpdateProcessingState("test.jsonl", 42, 1024, 12345)
 	if err != nil {
 		t.Fatalf("Failed to update processing state: %v", err)
 	}
@@ -203,6 +203,9 @@ func TestProcessingState(t *testing.T) {
 	}
 	if updated.FileSizeBytes != 1024 {
 		t.Errorf("Expected size 1024, got %d", updated.FileSizeBytes)
+	}
+	if updated.Inode != 12345 {
+		t.Errorf("Expected inode 12345, got %d", updated.Inode)
 	}
 }
 

@@ -461,6 +461,206 @@ func TestEnginePerToolTracking(t *testing.T) {
 	}
 }
 
+// TestExtractorsWithStringValues tests that extractors handle OTLP stringValue format
+// This is the format Claude Code actually sends: {"stringValue": "true"} instead of {"boolValue": true}
+func TestExtractorsWithStringValues(t *testing.T) {
+	// Test extractBool with stringValue format
+	t.Run("extractBool with stringValue true", func(t *testing.T) {
+		attrs := map[string]interface{}{
+			"success": map[string]interface{}{
+				"stringValue": "true",
+			},
+		}
+		if !extractBool(attrs, "success") {
+			t.Error("Expected extractBool to return true for stringValue 'true'")
+		}
+	})
+
+	t.Run("extractBool with stringValue false", func(t *testing.T) {
+		attrs := map[string]interface{}{
+			"success": map[string]interface{}{
+				"stringValue": "false",
+			},
+		}
+		if extractBool(attrs, "success") {
+			t.Error("Expected extractBool to return false for stringValue 'false'")
+		}
+	})
+
+	t.Run("extractBool with boolValue (legacy)", func(t *testing.T) {
+		attrs := map[string]interface{}{
+			"success": map[string]interface{}{
+				"boolValue": true,
+			},
+		}
+		if !extractBool(attrs, "success") {
+			t.Error("Expected extractBool to return true for boolValue true")
+		}
+	})
+
+	// Test extractFloat with stringValue format
+	t.Run("extractFloat with stringValue", func(t *testing.T) {
+		attrs := map[string]interface{}{
+			"duration_ms": map[string]interface{}{
+				"stringValue": "123.45",
+			},
+		}
+		result := extractFloat(attrs, "duration_ms")
+		if result != 123.45 {
+			t.Errorf("Expected 123.45, got %f", result)
+		}
+	})
+
+	t.Run("extractFloat with stringValue integer", func(t *testing.T) {
+		attrs := map[string]interface{}{
+			"duration_ms": map[string]interface{}{
+				"stringValue": "37",
+			},
+		}
+		result := extractFloat(attrs, "duration_ms")
+		if result != 37.0 {
+			t.Errorf("Expected 37.0, got %f", result)
+		}
+	})
+
+	t.Run("extractFloat with doubleValue (legacy)", func(t *testing.T) {
+		attrs := map[string]interface{}{
+			"duration_ms": map[string]interface{}{
+				"doubleValue": 99.9,
+			},
+		}
+		result := extractFloat(attrs, "duration_ms")
+		if result != 99.9 {
+			t.Errorf("Expected 99.9, got %f", result)
+		}
+	})
+
+	// Test extractString
+	t.Run("extractString with stringValue", func(t *testing.T) {
+		attrs := map[string]interface{}{
+			"tool_name": map[string]interface{}{
+				"stringValue": "Bash",
+			},
+		}
+		result := extractString(attrs, "tool_name")
+		if result != "Bash" {
+			t.Errorf("Expected 'Bash', got '%s'", result)
+		}
+	})
+}
+
+// TestToolResultWithStringValues tests processing tool_result logs with string-encoded values
+// This matches the actual OTLP format sent by Claude Code
+func TestToolResultWithStringValues(t *testing.T) {
+	dbPath := "./test_engine_string_values.db"
+	defer os.Remove(dbPath)
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	engine := NewEngine(store)
+	sessionID := "string-values-test"
+
+	// This matches the actual format from Claude Code telemetry
+	toolRecord := &LogRecord{
+		Timestamp: time.Now(),
+		SessionID: sessionID,
+		UserID:    "user-123",
+		Body:      "claude_code.tool_result",
+		Attributes: map[string]interface{}{
+			"success": map[string]interface{}{
+				"stringValue": "true", // String, not bool!
+			},
+			"tool_name": map[string]interface{}{
+				"stringValue": "Bash",
+			},
+			"duration_ms": map[string]interface{}{
+				"stringValue": "37", // String, not number!
+			},
+		},
+	}
+
+	engine.ProcessLog(toolRecord)
+
+	// Verify tool stats were captured correctly
+	engine.cacheMutex.RLock()
+	toolStats, exists := engine.toolStatsCache[sessionID]["Bash"]
+	session := engine.sessionCache[sessionID]
+	engine.cacheMutex.RUnlock()
+
+	if !exists {
+		t.Fatal("Tool stats not found in cache - stringValue format not handled correctly")
+	}
+
+	if toolStats.ExecutionCount != 1 {
+		t.Errorf("Expected execution count 1, got %d", toolStats.ExecutionCount)
+	}
+
+	if toolStats.SuccessCount != 1 {
+		t.Errorf("Expected success count 1, got %d (stringValue 'true' not parsed correctly)", toolStats.SuccessCount)
+	}
+
+	if toolStats.AvgDurationMS != 37.0 {
+		t.Errorf("Expected duration 37.0, got %f (stringValue '37' not parsed correctly)", toolStats.AvgDurationMS)
+	}
+
+	if session.ToolSuccessCount != 1 {
+		t.Errorf("Expected session tool success count 1, got %d", session.ToolSuccessCount)
+	}
+}
+
+// TestToolResultWithStringFalse tests that string "false" is correctly parsed as failure
+func TestToolResultWithStringFalse(t *testing.T) {
+	dbPath := "./test_engine_string_false.db"
+	defer os.Remove(dbPath)
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	engine := NewEngine(store)
+	sessionID := "string-false-test"
+
+	toolRecord := &LogRecord{
+		Timestamp: time.Now(),
+		SessionID: sessionID,
+		UserID:    "user-123",
+		Body:      "claude_code.tool_result",
+		Attributes: map[string]interface{}{
+			"success": map[string]interface{}{
+				"stringValue": "false",
+			},
+			"tool_name": map[string]interface{}{
+				"stringValue": "Bash",
+			},
+		},
+	}
+
+	engine.ProcessLog(toolRecord)
+
+	engine.cacheMutex.RLock()
+	toolStats := engine.toolStatsCache[sessionID]["Bash"]
+	session := engine.sessionCache[sessionID]
+	engine.cacheMutex.RUnlock()
+
+	if toolStats.SuccessCount != 0 {
+		t.Errorf("Expected success count 0, got %d", toolStats.SuccessCount)
+	}
+
+	if toolStats.FailureCount != 1 {
+		t.Errorf("Expected failure count 1, got %d", toolStats.FailureCount)
+	}
+
+	if session.ToolFailureCount != 1 {
+		t.Errorf("Expected session tool failure count 1, got %d", session.ToolFailureCount)
+	}
+}
+
 func TestEngineMultipleModels(t *testing.T) {
 	dbPath := "./test_engine_multi_model.db"
 	defer os.Remove(dbPath)

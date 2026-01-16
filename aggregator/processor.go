@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -81,6 +82,9 @@ func (p *Processor) ProcessFile(filePath string) error {
 		return fmt.Errorf("failed to stat file: %w", err)
 	}
 
+	// Get inode for rotation detection
+	currentInode := getInode(fileInfo)
+
 	filename := filepath.Base(filePath)
 
 	// Get processing state
@@ -89,16 +93,27 @@ func (p *Processor) ProcessFile(filePath string) error {
 		return fmt.Errorf("failed to get processing state: %w", err)
 	}
 
-	// Detect file rotation/truncation (file size decreased)
-	if fileInfo.Size() < state.FileSizeBytes {
-		log.Printf("File %s was rotated or truncated (size decreased from %d to %d), resetting position",
-			filename, state.FileSizeBytes, fileInfo.Size())
+	// Detect file rotation using two methods:
+	// 1. Inode changed - file was renamed and new file created (most reliable)
+	// 2. File size < last offset - file was truncated in place (copytruncate style)
+	inodeChanged := state.Inode != 0 && currentInode != state.Inode
+	truncated := state.LastByteOffset > fileInfo.Size()
+
+	if inodeChanged || truncated {
+		if inodeChanged {
+			log.Printf("File %s was rotated (inode changed from %d to %d), resetting position",
+				filename, state.Inode, currentInode)
+		} else {
+			log.Printf("File %s was truncated (size %d < offset %d), resetting position",
+				filename, fileInfo.Size(), state.LastByteOffset)
+		}
 		state.LastByteOffset = 0
 		state.FileSizeBytes = 0
+		state.Inode = currentInode
 	}
 
 	// Check if file has new data
-	if fileInfo.Size() <= state.FileSizeBytes {
+	if fileInfo.Size() <= state.LastByteOffset {
 		return nil // No new data
 	}
 
@@ -139,7 +154,7 @@ func (p *Processor) ProcessFile(filePath string) error {
 
 		// Update processing state periodically (every 100 lines)
 		if newLinesProcessed%100 == 0 {
-			if err := p.store.UpdateProcessingState(filename, currentOffset, fileInfo.Size()); err != nil {
+			if err := p.store.UpdateProcessingState(filename, currentOffset, fileInfo.Size(), currentInode); err != nil {
 				log.Printf("Error updating processing state: %v", err)
 			}
 		}
@@ -151,7 +166,7 @@ func (p *Processor) ProcessFile(filePath string) error {
 
 	// Final state update
 	if newLinesProcessed > 0 {
-		if err := p.store.UpdateProcessingState(filename, currentOffset, fileInfo.Size()); err != nil {
+		if err := p.store.UpdateProcessingState(filename, currentOffset, fileInfo.Size(), currentInode); err != nil {
 			return fmt.Errorf("failed to update processing state: %w", err)
 		}
 		log.Printf("Processed %d new lines from %s (now at byte offset %d)", newLinesProcessed, filename, currentOffset)
@@ -481,8 +496,9 @@ func extractLogRecord(logMap map[string]interface{}, resourceAttrs map[string]st
 		body, _ = bodyMap["stringValue"].(string)
 	}
 
-	// Extract log attributes
+	// Extract log attributes - these contain session.id, user.id, etc.
 	logAttrs := make(map[string]interface{})
+	logAttrsStr := make(map[string]string) // String values for easy access
 	if attributes, ok := logMap["attributes"].([]interface{}); ok {
 		for _, attr := range attributes {
 			attrMap, ok := attr.(map[string]interface{})
@@ -491,18 +507,37 @@ func extractLogRecord(logMap map[string]interface{}, resourceAttrs map[string]st
 			}
 			key, _ := attrMap["key"].(string)
 			if valueMap, ok := attrMap["value"].(map[string]interface{}); ok {
-				// Store the whole value map
+				// Store the whole value map for complex access
 				logAttrs[key] = valueMap
+				// Also extract string value for easy access
+				if strVal, ok := valueMap["stringValue"].(string); ok {
+					logAttrsStr[key] = strVal
+				}
 			}
 		}
 	}
 
+	// Get identifiers from log attributes first, fall back to resource attributes
+	sessionID := logAttrsStr["session.id"]
+	if sessionID == "" {
+		sessionID = resourceAttrs["session.id"]
+	}
+	userID := logAttrsStr["user.id"]
+	if userID == "" {
+		userID = resourceAttrs["user.id"]
+	}
+	orgID := logAttrsStr["organization.id"]
+	if orgID == "" {
+		orgID = resourceAttrs["organization.id"]
+	}
+	serviceName := resourceAttrs["service.name"]
+
 	return &LogRecord{
 		Timestamp:      timestamp,
-		SessionID:      resourceAttrs["session.id"],
-		UserID:         resourceAttrs["user.id"],
-		OrganizationID: resourceAttrs["organization.id"],
-		ServiceName:    resourceAttrs["service.name"],
+		SessionID:      sessionID,
+		UserID:         userID,
+		OrganizationID: orgID,
+		ServiceName:    serviceName,
 		SeverityText:   severityText,
 		Body:           body,
 		Attributes:     logAttrs,
@@ -543,4 +578,13 @@ func extractTraceRecord(spanMap map[string]interface{}, resourceAttrs map[string
 		DurationMS:     durationMS,
 		Attributes:     resourceAttrs,
 	}
+}
+
+// getInode extracts the inode from a FileInfo for rotation detection.
+// Returns 0 if the inode cannot be determined (e.g., on non-Unix systems).
+func getInode(info os.FileInfo) uint64 {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return stat.Ino
+	}
+	return 0
 }

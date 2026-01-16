@@ -2,11 +2,16 @@ package aggregator
 
 import (
 	"database/sql"
+	"embed"
 	"fmt"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/pressly/goose/v3"
 )
+
+//go:embed migrations/*.sql
+var embedMigrations embed.FS
 
 type Store struct {
 	db *sql.DB
@@ -25,161 +30,81 @@ func NewStore(dbPath string) (*Store, error) {
 	}
 
 	store := &Store{db: db}
-	if err := store.InitSchema(); err != nil {
-		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	if err := store.RunMigrations(); err != nil {
+		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
 	return store, nil
 }
 
-// InitSchema creates the database tables if they don't exist
-func (s *Store) InitSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS session_stats (
-		session_id TEXT PRIMARY KEY,
-		user_id TEXT NOT NULL,
-		organization_id TEXT NOT NULL,
-		service_name TEXT,
-		start_time INTEGER,
-		last_update_time INTEGER,
+// RunMigrations runs all pending database migrations using goose
+func (s *Store) RunMigrations() error {
+	// Handle legacy databases that exist but weren't created with goose
+	// by applying necessary schema fixes before running migrations
+	if err := s.applyLegacyFixes(); err != nil {
+		return fmt.Errorf("failed to apply legacy fixes: %w", err)
+	}
 
-		terminal_type TEXT,
-		host_arch TEXT,
-		os_type TEXT,
+	goose.SetBaseFS(embedMigrations)
 
-		total_cost_usd REAL DEFAULT 0,
-		total_input_tokens INTEGER DEFAULT 0,
-		total_output_tokens INTEGER DEFAULT 0,
-		total_cache_read_tokens INTEGER DEFAULT 0,
-		total_cache_creation_tokens INTEGER DEFAULT 0,
-		total_active_time_seconds REAL DEFAULT 0,
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("failed to set dialect: %w", err)
+	}
 
-		api_request_count INTEGER DEFAULT 0,
-		user_prompt_count INTEGER DEFAULT 0,
-		tool_execution_count INTEGER DEFAULT 0,
-		tool_success_count INTEGER DEFAULT 0,
-		tool_failure_count INTEGER DEFAULT 0,
+	if err := goose.Up(s.db, "migrations"); err != nil {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
 
-		avg_api_latency_ms REAL DEFAULT 0,
-		total_api_latency_ms REAL DEFAULT 0,
+	return nil
+}
 
-		models_used TEXT,
-		tools_used TEXT,
+// applyLegacyFixes handles databases that were created before goose migrations
+// were introduced. It marks migration 001 as applied for existing databases
+// so that goose can correctly apply only new migrations.
+func (s *Store) applyLegacyFixes() error {
+	// Check if this is a legacy database (has tables but no goose version table)
+	var hasLegacyTables int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='session_stats'
+	`).Scan(&hasLegacyTables)
+	if err != nil {
+		return err
+	}
 
-		created_at INTEGER,
-		updated_at INTEGER
-	);
+	var hasGooseTable int
+	err = s.db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='goose_db_version'
+	`).Scan(&hasGooseTable)
+	if err != nil {
+		return err
+	}
 
-	CREATE INDEX IF NOT EXISTS idx_session_user_id ON session_stats(user_id);
-	CREATE INDEX IF NOT EXISTS idx_session_org_id ON session_stats(organization_id);
-	CREATE INDEX IF NOT EXISTS idx_session_start_time ON session_stats(start_time);
+	if hasLegacyTables > 0 && hasGooseTable == 0 {
+		// This is a legacy database - create goose table and mark migration 001 as applied
+		_, err = s.db.Exec(`
+			CREATE TABLE IF NOT EXISTS goose_db_version (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				version_id INTEGER NOT NULL,
+				is_applied INTEGER NOT NULL,
+				tstamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to create goose version table: %w", err)
+		}
 
-	CREATE TABLE IF NOT EXISTS user_stats (
-		user_id TEXT NOT NULL,
-		organization_id TEXT NOT NULL,
-		window_start INTEGER,
-		window_end INTEGER,
-		window_type TEXT,
+		// Mark migration 001 (initial schema) as already applied
+		_, err = s.db.Exec(`
+			INSERT INTO goose_db_version (version_id, is_applied) VALUES (1, 1)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to mark migration 001 as applied: %w", err)
+		}
+	}
 
-		total_sessions INTEGER DEFAULT 0,
-		total_cost_usd REAL DEFAULT 0,
-		total_input_tokens INTEGER DEFAULT 0,
-		total_output_tokens INTEGER DEFAULT 0,
-		total_cache_read_tokens INTEGER DEFAULT 0,
-		total_cache_creation_tokens INTEGER DEFAULT 0,
-		total_active_time_seconds REAL DEFAULT 0,
-
-		avg_cost_per_session REAL DEFAULT 0,
-		avg_tokens_per_session REAL DEFAULT 0,
-		avg_session_duration_seconds REAL DEFAULT 0,
-
-		preferred_models TEXT,
-		favorite_tools TEXT,
-
-		tool_success_rate REAL DEFAULT 0,
-
-		last_session_time INTEGER,
-		created_at INTEGER,
-		updated_at INTEGER,
-
-		PRIMARY KEY (user_id, window_type, window_start)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_user_org_id ON user_stats(organization_id);
-	CREATE INDEX IF NOT EXISTS idx_user_window ON user_stats(window_start, window_end);
-
-	CREATE TABLE IF NOT EXISTS org_stats (
-		organization_id TEXT NOT NULL,
-		window_start INTEGER,
-		window_end INTEGER,
-		window_type TEXT,
-
-		total_users INTEGER DEFAULT 0,
-		total_sessions INTEGER DEFAULT 0,
-		total_cost_usd REAL DEFAULT 0,
-		total_tokens INTEGER DEFAULT 0,
-		total_active_time_seconds REAL DEFAULT 0,
-
-		avg_cost_per_user REAL DEFAULT 0,
-		avg_sessions_per_user REAL DEFAULT 0,
-
-		top_users_by_cost TEXT,
-		top_users_by_usage TEXT,
-
-		created_at INTEGER,
-		updated_at INTEGER,
-
-		PRIMARY KEY (organization_id, window_type, window_start)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_org_window ON org_stats(window_start, window_end);
-
-	CREATE TABLE IF NOT EXISTS processing_state (
-		file_name TEXT PRIMARY KEY,
-		last_byte_offset INTEGER DEFAULT 0,
-		last_processed_time INTEGER,
-		file_size_bytes INTEGER,
-		updated_at INTEGER
-	);
-
-	CREATE TABLE IF NOT EXISTS session_model_stats (
-		session_id TEXT NOT NULL,
-		model TEXT NOT NULL,
-		cost_usd REAL DEFAULT 0,
-		input_tokens INTEGER DEFAULT 0,
-		output_tokens INTEGER DEFAULT 0,
-		cache_read_tokens INTEGER DEFAULT 0,
-		cache_creation_tokens INTEGER DEFAULT 0,
-		request_count INTEGER DEFAULT 0,
-		total_latency_ms REAL DEFAULT 0,
-		avg_latency_ms REAL DEFAULT 0,
-		PRIMARY KEY (session_id, model),
-		FOREIGN KEY (session_id) REFERENCES session_stats(session_id)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_model_name ON session_model_stats(model);
-	CREATE INDEX IF NOT EXISTS idx_model_session ON session_model_stats(session_id);
-
-	CREATE TABLE IF NOT EXISTS session_tool_stats (
-		session_id TEXT NOT NULL,
-		tool_name TEXT NOT NULL,
-		execution_count INTEGER DEFAULT 0,
-		success_count INTEGER DEFAULT 0,
-		failure_count INTEGER DEFAULT 0,
-		total_duration_ms REAL DEFAULT 0,
-		avg_duration_ms REAL DEFAULT 0,
-		min_duration_ms REAL DEFAULT 0,
-		max_duration_ms REAL DEFAULT 0,
-		PRIMARY KEY (session_id, tool_name),
-		FOREIGN KEY (session_id) REFERENCES session_stats(session_id)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_tool_name ON session_tool_stats(tool_name);
-	CREATE INDEX IF NOT EXISTS idx_tool_session ON session_tool_stats(session_id);
-	`
-
-	_, err := s.db.Exec(schema)
-	return err
+	return nil
 }
 
 // Close closes the database connection
@@ -347,26 +272,27 @@ func (s *Store) GetSessionStats(sessionID string) (*SessionStats, error) {
 }
 
 // UpdateProcessingState updates the processing state for a file
-func (s *Store) UpdateProcessingState(fileName string, byteOffset int64, fileSize int64) error {
+func (s *Store) UpdateProcessingState(fileName string, byteOffset int64, fileSize int64, inode uint64) error {
 	query := `
-	INSERT INTO processing_state (file_name, last_byte_offset, last_processed_time, file_size_bytes, updated_at)
-	VALUES (?, ?, ?, ?, ?)
+	INSERT INTO processing_state (file_name, last_byte_offset, last_processed_time, file_size_bytes, inode, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?)
 	ON CONFLICT(file_name) DO UPDATE SET
 		last_byte_offset = excluded.last_byte_offset,
 		last_processed_time = excluded.last_processed_time,
 		file_size_bytes = excluded.file_size_bytes,
+		inode = excluded.inode,
 		updated_at = excluded.updated_at
 	`
 
 	now := time.Now().Unix()
-	_, err := s.db.Exec(query, fileName, byteOffset, now, fileSize, now)
+	_, err := s.db.Exec(query, fileName, byteOffset, now, fileSize, inode, now)
 	return err
 }
 
 // GetProcessingState retrieves the processing state for a file
 func (s *Store) GetProcessingState(fileName string) (*ProcessingState, error) {
 	query := `
-	SELECT file_name, last_byte_offset, last_processed_time, file_size_bytes, updated_at
+	SELECT file_name, last_byte_offset, last_processed_time, file_size_bytes, COALESCE(inode, 0), updated_at
 	FROM processing_state WHERE file_name = ?
 	`
 
@@ -375,7 +301,7 @@ func (s *Store) GetProcessingState(fileName string) (*ProcessingState, error) {
 
 	err := s.db.QueryRow(query, fileName).Scan(
 		&state.FileName, &state.LastByteOffset, &lastProcessedTime,
-		&state.FileSizeBytes, &updatedAt,
+		&state.FileSizeBytes, &state.Inode, &updatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -383,6 +309,7 @@ func (s *Store) GetProcessingState(fileName string) (*ProcessingState, error) {
 		return &ProcessingState{
 			FileName:       fileName,
 			LastByteOffset: 0,
+			Inode:          0,
 		}, nil
 	}
 

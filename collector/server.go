@@ -12,11 +12,11 @@ import (
 )
 
 type Server struct {
-	config        *config.Config
-	httpServer    *http.Server
-	traceHandler  *TraceHandler
+	config         *config.Config
+	httpServer     *http.Server
+	traceHandler   *TraceHandler
 	metricsHandler *MetricsHandler
-	logsHandler   *LogsHandler
+	logsHandler    *LogsHandler
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {

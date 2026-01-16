@@ -401,6 +401,12 @@ func extractFloat(attrs map[string]interface{}, key string) float64 {
 			if intVal, ok := v["intValue"].(float64); ok {
 				return intVal
 			}
+			// Handle stringValue containing a number
+			if strVal, ok := v["stringValue"].(string); ok {
+				var f float64
+				fmt.Sscanf(strVal, "%f", &f)
+				return f
+			}
 		}
 	}
 	return 0
@@ -425,9 +431,15 @@ func extractBool(attrs map[string]interface{}, key string) bool {
 		switch v := val.(type) {
 		case bool:
 			return v
+		case string:
+			return v == "true" || v == "1"
 		case map[string]interface{}:
 			if boolVal, ok := v["boolValue"].(bool); ok {
 				return boolVal
+			}
+			// Handle stringValue containing "true"/"false"
+			if strVal, ok := v["stringValue"].(string); ok {
+				return strVal == "true" || strVal == "1"
 			}
 		}
 	}

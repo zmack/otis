@@ -134,6 +134,7 @@ type ProcessingState struct {
 	LastByteOffset    int64 // Byte position in file (for efficient seeking)
 	LastProcessedTime time.Time
 	FileSizeBytes     int64
+	Inode             uint64 // File inode for rotation detection
 	UpdatedAt         time.Time
 }
 

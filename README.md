@@ -31,10 +31,10 @@ A lightweight OpenTelemetry Protocol (OTLP) collector and aggregation system bui
 ```bash
 git clone https://github.com/zmack/otis
 cd otis
-go build
+make build
 ```
 
-This creates the `otis` binary.
+This creates the `otis` binary. Database migrations run automatically on startup.
 
 ## Configuration
 
@@ -75,6 +75,11 @@ export OTIS_OUTPUT_DIR=/var/log/otis
 
 ### Starting Otis
 
+```bash
+make run
+```
+
+Or directly:
 ```bash
 ./otis
 ```
@@ -339,13 +344,38 @@ Response:
 
 ## Development
 
+### Makefile Targets
+
+```bash
+make build           # Build the binary
+make run             # Build and run (migrations auto-run)
+make test            # Run tests
+make clean           # Remove build artifacts
+make fmt             # Format code
+make lint            # Run linter (requires golangci-lint)
+```
+
+### Database Migrations
+
+Otis uses [goose](https://github.com/pressly/goose) for database migrations. Migrations run automatically on startup, but can also be managed manually:
+
+```bash
+make install-goose   # Install goose CLI (one-time)
+make migrate         # Run pending migrations
+make migrate-status  # Check migration status
+make migrate-down    # Rollback last migration
+make migrate-create  # Create a new migration file
+```
+
+Migration files are located in `aggregator/migrations/` and are embedded in the binary at build time.
+
 ### Running Tests
 
 ```bash
 # Run all tests
-go test ./...
+make test
 
-# Run aggregator tests with verbose output
+# Run with verbose output
 go test ./aggregator/... -v
 
 # Run tests with coverage
@@ -357,6 +387,7 @@ go test ./aggregator/... -cover
 ```
 otis/
 ├── main.go              # Application entry point
+├── Makefile             # Build, test, and migration commands
 ├── config/
 │   └── config.go        # Configuration management
 ├── collector/
@@ -367,15 +398,18 @@ otis/
 │   └── logs.go          # Logs handler
 ├── aggregator/
 │   ├── models.go        # Data models
-│   ├── store.go         # SQLite operations
+│   ├── store.go         # SQLite operations + migration runner
 │   ├── processor.go     # File monitoring & parsing
 │   ├── engine.go        # Aggregation logic
 │   ├── api.go           # REST API handlers
+│   ├── migrations/      # Database migrations (embedded at build)
+│   │   ├── 001_initial_schema.sql
+│   │   └── 002_add_last_byte_offset.sql
 │   ├── store_test.go    # Store tests
 │   └── engine_test.go   # Engine tests
 ├── test/                # Test utilities
-├── data/                # JSONL output directory
-└── db/                  # SQLite database directory
+├── data/                # JSONL output directory (created at runtime)
+└── db/                  # SQLite database directory (created at runtime)
 ```
 
 ### Adding New Metrics
@@ -383,7 +417,7 @@ otis/
 To track additional metrics in aggregations:
 
 1. Add fields to `SessionStats` struct in `aggregator/models.go`
-2. Update database schema in `aggregator/store.go` (`InitSchema`)
+2. Create a new migration: `make migrate-create` and add the schema changes
 3. Add processing logic in `aggregator/engine.go` (`ProcessMetric` or `ProcessLog`)
 4. Update API response builders in `aggregator/api.go`
 
