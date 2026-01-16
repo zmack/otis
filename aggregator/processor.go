@@ -89,6 +89,14 @@ func (p *Processor) ProcessFile(filePath string) error {
 		return fmt.Errorf("failed to get processing state: %w", err)
 	}
 
+	// Detect file rotation/truncation (file size decreased)
+	if fileInfo.Size() < state.FileSizeBytes {
+		log.Printf("File %s was rotated or truncated (size decreased from %d to %d), resetting position",
+			filename, state.FileSizeBytes, fileInfo.Size())
+		state.LastByteOffset = 0
+		state.FileSizeBytes = 0
+	}
+
 	// Check if file has new data
 	if fileInfo.Size() <= state.FileSizeBytes {
 		return nil // No new data
@@ -101,34 +109,37 @@ func (p *Processor) ProcessFile(filePath string) error {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	lineNumber := 0
-	newLinesProcessed := 0
-
-	// Skip already processed lines
-	for lineNumber < state.LastProcessedLine && scanner.Scan() {
-		lineNumber++
+	// Seek to last processed position (PERFORMANCE FIX!)
+	_, err = file.Seek(state.LastByteOffset, 0)
+	if err != nil {
+		return fmt.Errorf("failed to seek to position %d: %w", state.LastByteOffset, err)
 	}
 
-	// Process new lines
+	scanner := bufio.NewScanner(file)
+	newLinesProcessed := 0
+	currentOffset := state.LastByteOffset
+
+	// Process new lines (starting from where we left off)
 	for scanner.Scan() {
-		lineNumber++
 		line := scanner.Text()
 
 		if strings.TrimSpace(line) == "" {
-			continue // Skip empty lines
+			// Track offset even for empty lines
+			currentOffset += int64(len(line) + 1) // +1 for newline
+			continue
 		}
 
 		if err := p.processLine(filename, line); err != nil {
-			log.Printf("Error processing line %d in %s: %v", lineNumber, filename, err)
-			continue // Skip errored lines but keep processing
+			log.Printf("Error processing line in %s at offset %d: %v", filename, currentOffset, err)
+			// Continue processing even on error
 		}
 
 		newLinesProcessed++
+		currentOffset += int64(len(line) + 1) // +1 for newline
 
 		// Update processing state periodically (every 100 lines)
 		if newLinesProcessed%100 == 0 {
-			if err := p.store.UpdateProcessingState(filename, lineNumber, fileInfo.Size()); err != nil {
+			if err := p.store.UpdateProcessingState(filename, currentOffset, fileInfo.Size()); err != nil {
 				log.Printf("Error updating processing state: %v", err)
 			}
 		}
@@ -140,10 +151,10 @@ func (p *Processor) ProcessFile(filePath string) error {
 
 	// Final state update
 	if newLinesProcessed > 0 {
-		if err := p.store.UpdateProcessingState(filename, lineNumber, fileInfo.Size()); err != nil {
+		if err := p.store.UpdateProcessingState(filename, currentOffset, fileInfo.Size()); err != nil {
 			return fmt.Errorf("failed to update processing state: %w", err)
 		}
-		log.Printf("Processed %d new lines from %s (total: %d)", newLinesProcessed, filename, lineNumber)
+		log.Printf("Processed %d new lines from %s (now at byte offset %d)", newLinesProcessed, filename, currentOffset)
 	}
 
 	return nil

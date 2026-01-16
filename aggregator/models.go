@@ -130,11 +130,11 @@ type SessionToolStats struct {
 
 // ProcessingState tracks the processing position for each JSONL file
 type ProcessingState struct {
-	FileName           string
-	LastProcessedLine  int
-	LastProcessedTime  time.Time
-	FileSizeBytes      int64
-	UpdatedAt          time.Time
+	FileName          string
+	LastByteOffset    int64 // Byte position in file (for efficient seeking)
+	LastProcessedTime time.Time
+	FileSizeBytes     int64
+	UpdatedAt         time.Time
 }
 
 // MetricRecord represents a parsed metric from the JSONL file

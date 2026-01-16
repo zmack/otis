@@ -136,7 +136,7 @@ func (s *Store) InitSchema() error {
 
 	CREATE TABLE IF NOT EXISTS processing_state (
 		file_name TEXT PRIMARY KEY,
-		last_processed_line INTEGER DEFAULT 0,
+		last_byte_offset INTEGER DEFAULT 0,
 		last_processed_time INTEGER,
 		file_size_bytes INTEGER,
 		updated_at INTEGER
@@ -347,26 +347,26 @@ func (s *Store) GetSessionStats(sessionID string) (*SessionStats, error) {
 }
 
 // UpdateProcessingState updates the processing state for a file
-func (s *Store) UpdateProcessingState(fileName string, lastLine int, fileSize int64) error {
+func (s *Store) UpdateProcessingState(fileName string, byteOffset int64, fileSize int64) error {
 	query := `
-	INSERT INTO processing_state (file_name, last_processed_line, last_processed_time, file_size_bytes, updated_at)
+	INSERT INTO processing_state (file_name, last_byte_offset, last_processed_time, file_size_bytes, updated_at)
 	VALUES (?, ?, ?, ?, ?)
 	ON CONFLICT(file_name) DO UPDATE SET
-		last_processed_line = excluded.last_processed_line,
+		last_byte_offset = excluded.last_byte_offset,
 		last_processed_time = excluded.last_processed_time,
 		file_size_bytes = excluded.file_size_bytes,
 		updated_at = excluded.updated_at
 	`
 
 	now := time.Now().Unix()
-	_, err := s.db.Exec(query, fileName, lastLine, now, fileSize, now)
+	_, err := s.db.Exec(query, fileName, byteOffset, now, fileSize, now)
 	return err
 }
 
 // GetProcessingState retrieves the processing state for a file
 func (s *Store) GetProcessingState(fileName string) (*ProcessingState, error) {
 	query := `
-	SELECT file_name, last_processed_line, last_processed_time, file_size_bytes, updated_at
+	SELECT file_name, last_byte_offset, last_processed_time, file_size_bytes, updated_at
 	FROM processing_state WHERE file_name = ?
 	`
 
@@ -374,15 +374,15 @@ func (s *Store) GetProcessingState(fileName string) (*ProcessingState, error) {
 	var lastProcessedTime, updatedAt int64
 
 	err := s.db.QueryRow(query, fileName).Scan(
-		&state.FileName, &state.LastProcessedLine, &lastProcessedTime,
+		&state.FileName, &state.LastByteOffset, &lastProcessedTime,
 		&state.FileSizeBytes, &updatedAt,
 	)
 
 	if err == sql.ErrNoRows {
 		// Return empty state if not found
 		return &ProcessingState{
-			FileName:          fileName,
-			LastProcessedLine: 0,
+			FileName:       fileName,
+			LastByteOffset: 0,
 		}, nil
 	}
 

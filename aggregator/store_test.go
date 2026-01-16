@@ -182,8 +182,8 @@ func TestProcessingState(t *testing.T) {
 		t.Fatalf("Failed to get processing state: %v", err)
 	}
 
-	if state.LastProcessedLine != 0 {
-		t.Errorf("Expected initial line 0, got %d", state.LastProcessedLine)
+	if state.LastByteOffset != 0 {
+		t.Errorf("Expected initial byte offset 0, got %d", state.LastByteOffset)
 	}
 
 	// Update state
@@ -198,8 +198,8 @@ func TestProcessingState(t *testing.T) {
 		t.Fatalf("Failed to get updated processing state: %v", err)
 	}
 
-	if updated.LastProcessedLine != 42 {
-		t.Errorf("Expected line 42, got %d", updated.LastProcessedLine)
+	if updated.LastByteOffset != 42 {
+		t.Errorf("Expected byte offset 42, got %d", updated.LastByteOffset)
 	}
 	if updated.FileSizeBytes != 1024 {
 		t.Errorf("Expected size 1024, got %d", updated.FileSizeBytes)
