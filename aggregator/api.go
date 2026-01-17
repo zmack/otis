@@ -66,6 +66,7 @@ func (s *APIServer) Start() error {
 	log.Printf("  GET http://localhost:%d/api/v2/sessions?org_id=X&user_id=Y&limit=10", s.port)
 	log.Printf("  GET http://localhost:%d/api/v2/sessions/{session_id}", s.port)
 	log.Printf("  GET http://localhost:%d/api/v2/sessions/{session_id}/tools", s.port)
+	log.Printf("  GET http://localhost:%d/api/v2/sessions/{session_id}/prompts", s.port)
 	log.Printf("  GET http://localhost:%d/api/v2/tools?limit=50", s.port)
 
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -706,6 +707,9 @@ func (s *APIServer) handleV2Session(w http.ResponseWriter, r *http.Request) {
 		case "tools":
 			s.handleV2SessionTools(w, r, sessionID)
 			return
+		case "prompts":
+			s.handleV2SessionPrompts(w, r, sessionID)
+			return
 		default:
 			http.Error(w, "Unknown sub-resource", http.StatusNotFound)
 			return
@@ -720,6 +724,34 @@ func (s *APIServer) handleV2Session(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := buildV2SessionResponse(session)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleV2SessionPrompts handles GET /api/v2/sessions/{session_id}/prompts
+func (s *APIServer) handleV2SessionPrompts(w http.ResponseWriter, r *http.Request, sessionID string) {
+	prompts, err := s.store.GetSessionPrompts(sessionID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error retrieving session prompts: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	promptList := make([]map[string]interface{}, len(prompts))
+	for i, prompt := range prompts {
+		promptList[i] = map[string]interface{}{
+			"id":            prompt.ID,
+			"prompt_text":   prompt.PromptText,
+			"prompt_length": prompt.PromptLength,
+			"timestamp":     prompt.Timestamp.Format(time.RFC3339Nano),
+		}
+	}
+
+	response := map[string]interface{}{
+		"session_id": sessionID,
+		"count":      len(prompts),
+		"prompts":    promptList,
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)

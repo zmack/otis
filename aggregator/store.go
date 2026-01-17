@@ -865,6 +865,53 @@ func (s *Store) GetSessionsByUser(userID string, limit int) ([]*Session, error) 
 	return sessions, rows.Err()
 }
 
+// InsertSessionPrompt inserts a new prompt for a session (skips duplicates)
+func (s *Store) InsertSessionPrompt(prompt *SessionPrompt) error {
+	query := `
+	INSERT OR IGNORE INTO session_prompts (session_id, prompt_text, prompt_length, timestamp)
+	VALUES (?, ?, ?, ?)
+	`
+
+	_, err := s.db.Exec(query,
+		prompt.SessionID, prompt.PromptText, prompt.PromptLength, prompt.Timestamp.UnixNano(),
+	)
+
+	return err
+}
+
+// GetSessionPrompts retrieves all prompts for a session, ordered by timestamp
+func (s *Store) GetSessionPrompts(sessionID string) ([]*SessionPrompt, error) {
+	query := `
+	SELECT id, session_id, prompt_text, prompt_length, timestamp
+	FROM session_prompts
+	WHERE session_id = ?
+	ORDER BY timestamp ASC
+	`
+
+	rows, err := s.db.Query(query, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var prompts []*SessionPrompt
+	for rows.Next() {
+		var prompt SessionPrompt
+		var timestamp int64
+		err := rows.Scan(
+			&prompt.ID, &prompt.SessionID, &prompt.PromptText,
+			&prompt.PromptLength, &timestamp,
+		)
+		if err != nil {
+			return nil, err
+		}
+		prompt.Timestamp = time.Unix(0, timestamp)
+		prompts = append(prompts, &prompt)
+	}
+
+	return prompts, rows.Err()
+}
+
 // GetToolAggregates retrieves aggregated statistics across all tools from the new table
 func (s *Store) GetToolAggregates(limit int) ([]*ToolAggregates, error) {
 	query := `

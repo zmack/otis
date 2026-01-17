@@ -725,3 +725,137 @@ func TestEngineMultipleModels(t *testing.T) {
 		t.Errorf("Expected 3 flushed model stats, got %d", count)
 	}
 }
+
+func TestEngineProcessLogUserPromptStorage(t *testing.T) {
+	dbPath := "./test_engine_prompts.db"
+	defer os.Remove(dbPath)
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	engine := NewEngine(store)
+	sessionID := "session-prompt-test"
+	now := time.Now()
+
+	// Test prompt with actual text (should be stored)
+	promptRecord := &LogRecord{
+		Timestamp: now,
+		SessionID: sessionID,
+		Body:      "claude_code.user_prompt",
+		Attributes: map[string]interface{}{
+			"prompt": map[string]interface{}{
+				"stringValue": "Hello, how are you?",
+			},
+			"prompt_length": map[string]interface{}{
+				"stringValue": "19",
+			},
+		},
+	}
+
+	engine.ProcessLog(promptRecord)
+
+	// Verify prompt was stored
+	prompts, err := store.GetSessionPrompts(sessionID)
+	if err != nil {
+		t.Fatalf("Failed to retrieve prompts: %v", err)
+	}
+
+	if len(prompts) != 1 {
+		t.Fatalf("Expected 1 prompt, got %d", len(prompts))
+	}
+
+	if prompts[0].PromptText != "Hello, how are you?" {
+		t.Errorf("Expected prompt text 'Hello, how are you?', got '%s'", prompts[0].PromptText)
+	}
+
+	if prompts[0].PromptLength != 19 {
+		t.Errorf("Expected prompt length 19, got %d", prompts[0].PromptLength)
+	}
+}
+
+func TestEngineProcessLogUserPromptSkipsRedacted(t *testing.T) {
+	dbPath := "./test_engine_prompts_redacted.db"
+	defer os.Remove(dbPath)
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	engine := NewEngine(store)
+	sessionID := "session-redacted-test"
+
+	// Test prompt with <REDACTED> (should NOT be stored)
+	redactedRecord := &LogRecord{
+		Timestamp: time.Now(),
+		SessionID: sessionID,
+		Body:      "claude_code.user_prompt",
+		Attributes: map[string]interface{}{
+			"prompt": map[string]interface{}{
+				"stringValue": "<REDACTED>",
+			},
+			"prompt_length": map[string]interface{}{
+				"stringValue": "42",
+			},
+		},
+	}
+
+	engine.ProcessLog(redactedRecord)
+
+	// Verify prompt was NOT stored
+	prompts, err := store.GetSessionPrompts(sessionID)
+	if err != nil {
+		t.Fatalf("Failed to retrieve prompts: %v", err)
+	}
+
+	if len(prompts) != 0 {
+		t.Errorf("Expected 0 prompts (redacted should be skipped), got %d", len(prompts))
+	}
+
+	// Verify count was still incremented
+	engine.cacheMutex.RLock()
+	session := engine.sessionCache[sessionID]
+	engine.cacheMutex.RUnlock()
+
+	if session.UserPromptCount != 1 {
+		t.Errorf("Expected UserPromptCount 1, got %d", session.UserPromptCount)
+	}
+}
+
+func TestEngineProcessLogUserPromptSkipsEmpty(t *testing.T) {
+	dbPath := "./test_engine_prompts_empty.db"
+	defer os.Remove(dbPath)
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	engine := NewEngine(store)
+	sessionID := "session-empty-test"
+
+	// Test prompt with no prompt attribute (should NOT be stored)
+	emptyRecord := &LogRecord{
+		Timestamp:  time.Now(),
+		SessionID:  sessionID,
+		Body:       "claude_code.user_prompt",
+		Attributes: map[string]interface{}{},
+	}
+
+	engine.ProcessLog(emptyRecord)
+
+	// Verify prompt was NOT stored
+	prompts, err := store.GetSessionPrompts(sessionID)
+	if err != nil {
+		t.Fatalf("Failed to retrieve prompts: %v", err)
+	}
+
+	if len(prompts) != 0 {
+		t.Errorf("Expected 0 prompts (empty should be skipped), got %d", len(prompts))
+	}
+}

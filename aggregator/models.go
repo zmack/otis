@@ -216,3 +216,12 @@ type SessionTool struct {
 	RejectedCount        int
 	TotalResultSizeBytes int64
 }
+
+// SessionPrompt represents a user prompt within a session
+type SessionPrompt struct {
+	ID           int64
+	SessionID    string
+	PromptText   string
+	PromptLength int
+	Timestamp    time.Time
+}

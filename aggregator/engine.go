@@ -285,6 +285,21 @@ func (e *Engine) ProcessLog(record *LogRecord) {
 	} else if containsString(record.Body, "claude_code.user_prompt") {
 		stats.UserPromptCount++
 
+		// Extract and store the prompt if it's not redacted
+		promptText := extractString(record.Attributes, "prompt")
+		if promptText != "" && promptText != "<REDACTED>" {
+			promptLength := extractInt(record.Attributes, "prompt_length")
+			prompt := &SessionPrompt{
+				SessionID:    record.SessionID,
+				PromptText:   promptText,
+				PromptLength: int(promptLength),
+				Timestamp:    record.Timestamp,
+			}
+			if err := e.store.InsertSessionPrompt(prompt); err != nil {
+				log.Printf("Error inserting prompt for session %s: %v", record.SessionID, err)
+			}
+		}
+
 	} else if containsString(record.Body, "claude_code.tool_decision") {
 		// Track tool usage from decisions
 		if toolName := extractString(record.Attributes, "tool_name"); toolName != "" {

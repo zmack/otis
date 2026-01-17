@@ -844,3 +844,113 @@ func TestGetToolAggregates(t *testing.T) {
 		t.Errorf("Expected Read to be used in 3 sessions, got %d", readAgg.SessionsUsedIn)
 	}
 }
+
+func TestSessionPromptsInsertAndRetrieve(t *testing.T) {
+	dbPath := "./test_prompts.db"
+	defer os.Remove(dbPath)
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "session-prompts-123"
+	now := time.Now()
+
+	// Insert multiple prompts
+	prompts := []*SessionPrompt{
+		{SessionID: sessionID, PromptText: "First prompt", PromptLength: 12, Timestamp: now},
+		{SessionID: sessionID, PromptText: "Second prompt", PromptLength: 13, Timestamp: now.Add(time.Second)},
+		{SessionID: sessionID, PromptText: "Third prompt", PromptLength: 12, Timestamp: now.Add(2 * time.Second)},
+	}
+
+	for _, p := range prompts {
+		err := store.InsertSessionPrompt(p)
+		if err != nil {
+			t.Fatalf("Failed to insert prompt: %v", err)
+		}
+	}
+
+	// Retrieve prompts
+	retrieved, err := store.GetSessionPrompts(sessionID)
+	if err != nil {
+		t.Fatalf("Failed to retrieve prompts: %v", err)
+	}
+
+	if len(retrieved) != 3 {
+		t.Errorf("Expected 3 prompts, got %d", len(retrieved))
+	}
+
+	// Verify order (should be by timestamp ASC)
+	if retrieved[0].PromptText != "First prompt" {
+		t.Errorf("Expected first prompt to be 'First prompt', got '%s'", retrieved[0].PromptText)
+	}
+	if retrieved[2].PromptText != "Third prompt" {
+		t.Errorf("Expected third prompt to be 'Third prompt', got '%s'", retrieved[2].PromptText)
+	}
+}
+
+func TestSessionPromptsDeduplication(t *testing.T) {
+	dbPath := "./test_prompts_dedup.db"
+	defer os.Remove(dbPath)
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "session-dedup-123"
+	timestamp := time.Now()
+
+	// Insert same prompt twice (same session + timestamp)
+	prompt := &SessionPrompt{
+		SessionID:    sessionID,
+		PromptText:   "Duplicate prompt",
+		PromptLength: 16,
+		Timestamp:    timestamp,
+	}
+
+	err = store.InsertSessionPrompt(prompt)
+	if err != nil {
+		t.Fatalf("Failed to insert first prompt: %v", err)
+	}
+
+	// Insert again - should be ignored due to UNIQUE constraint
+	err = store.InsertSessionPrompt(prompt)
+	if err != nil {
+		t.Fatalf("Failed on duplicate insert (should be ignored): %v", err)
+	}
+
+	// Verify only one prompt exists
+	retrieved, err := store.GetSessionPrompts(sessionID)
+	if err != nil {
+		t.Fatalf("Failed to retrieve prompts: %v", err)
+	}
+
+	if len(retrieved) != 1 {
+		t.Errorf("Expected 1 prompt after deduplication, got %d", len(retrieved))
+	}
+}
+
+func TestSessionPromptsEmptySession(t *testing.T) {
+	dbPath := "./test_prompts_empty.db"
+	defer os.Remove(dbPath)
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// Query for non-existent session
+	retrieved, err := store.GetSessionPrompts("nonexistent-session")
+	if err != nil {
+		t.Fatalf("Failed to retrieve prompts: %v", err)
+	}
+
+	if len(retrieved) != 0 {
+		t.Errorf("Expected 0 prompts for non-existent session, got %d", len(retrieved))
+	}
+}
