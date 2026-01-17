@@ -769,6 +769,54 @@ func (s *Store) GetSessionTools(sessionID string) ([]*SessionTool, error) {
 	return tools, rows.Err()
 }
 
+// GetAllSessions retrieves all sessions ordered by start time
+func (s *Store) GetAllSessions(limit int) ([]*Session, error) {
+	query := `
+	SELECT session_id, organization_id, user_id, start_time, end_time,
+		total_cost_usd, total_input_tokens, total_output_tokens,
+		total_cache_read_tokens, total_cache_creation_tokens, tool_call_count,
+		created_at, updated_at
+	FROM sessions
+	ORDER BY start_time DESC
+	LIMIT ?
+	`
+
+	rows, err := s.db.Query(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []*Session
+	for rows.Next() {
+		var session Session
+		var startTime, createdAt, updatedAt int64
+		var endTime sql.NullInt64
+
+		err := rows.Scan(
+			&session.SessionID, &session.OrganizationID, &session.UserID,
+			&startTime, &endTime,
+			&session.TotalCostUSD, &session.TotalInputTokens, &session.TotalOutputTokens,
+			&session.TotalCacheReadTokens, &session.TotalCacheCreationTokens, &session.ToolCallCount,
+			&createdAt, &updatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		session.StartTime = time.Unix(startTime, 0)
+		if endTime.Valid {
+			session.EndTime = time.Unix(endTime.Int64, 0)
+		}
+		session.CreatedAt = time.Unix(createdAt, 0)
+		session.UpdatedAt = time.Unix(updatedAt, 0)
+
+		sessions = append(sessions, &session)
+	}
+
+	return sessions, rows.Err()
+}
+
 // GetSessionsByOrg retrieves sessions for an organization
 func (s *Store) GetSessionsByOrg(orgID string, limit int) ([]*Session, error) {
 	query := `

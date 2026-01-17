@@ -659,8 +659,7 @@ func (s *APIServer) handleV2SessionsList(w http.ResponseWriter, r *http.Request)
 	} else if orgID != "" {
 		sessions, err = s.store.GetSessionsByOrg(orgID, limit)
 	} else {
-		http.Error(w, "Either org_id or user_id query parameter is required", http.StatusBadRequest)
-		return
+		sessions, err = s.store.GetAllSessions(limit)
 	}
 
 	if err != nil {
