@@ -180,3 +180,39 @@ type TimeWindow struct {
 	End   time.Time
 	Type  string // 'all-time', '7d', '30d', 'custom'
 }
+
+// Session represents a session in the new cleaner schema
+type Session struct {
+	SessionID      string
+	OrganizationID string
+	UserID         string
+	StartTime      time.Time
+	EndTime        time.Time
+
+	// Summary stats
+	TotalCostUSD             float64
+	TotalInputTokens         int64
+	TotalOutputTokens        int64
+	TotalCacheReadTokens     int64
+	TotalCacheCreationTokens int64
+	ToolCallCount            int
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// SessionTool represents per-tool statistics within a session
+type SessionTool struct {
+	SessionID            string
+	ToolName             string
+	CallCount            int
+	SuccessCount         int
+	FailureCount         int
+	TotalExecutionTimeMS float64
+
+	// Decision tracking
+	AutoApprovedCount    int
+	UserApprovedCount    int
+	RejectedCount        int
+	TotalResultSizeBytes int64
+}

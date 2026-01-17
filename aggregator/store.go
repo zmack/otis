@@ -631,3 +631,281 @@ func (s *Store) GetAllToolStats(limit int) ([]*ToolAggregates, error) {
 
 	return aggregates, rows.Err()
 }
+
+// UpsertSession inserts or updates a session in the new sessions table
+func (s *Store) UpsertSession(session *Session) error {
+	query := `
+	INSERT INTO sessions (
+		session_id, organization_id, user_id, start_time, end_time,
+		total_cost_usd, total_input_tokens, total_output_tokens,
+		total_cache_read_tokens, total_cache_creation_tokens, tool_call_count,
+		created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(session_id) DO UPDATE SET
+		end_time = excluded.end_time,
+		total_cost_usd = excluded.total_cost_usd,
+		total_input_tokens = excluded.total_input_tokens,
+		total_output_tokens = excluded.total_output_tokens,
+		total_cache_read_tokens = excluded.total_cache_read_tokens,
+		total_cache_creation_tokens = excluded.total_cache_creation_tokens,
+		tool_call_count = excluded.tool_call_count,
+		updated_at = excluded.updated_at
+	`
+
+	var endTime *int64
+	if !session.EndTime.IsZero() {
+		t := session.EndTime.Unix()
+		endTime = &t
+	}
+
+	_, err := s.db.Exec(query,
+		session.SessionID, session.OrganizationID, session.UserID,
+		session.StartTime.Unix(), endTime,
+		session.TotalCostUSD, session.TotalInputTokens, session.TotalOutputTokens,
+		session.TotalCacheReadTokens, session.TotalCacheCreationTokens, session.ToolCallCount,
+		session.CreatedAt.Unix(), session.UpdatedAt.Unix(),
+	)
+
+	return err
+}
+
+// UpsertSessionTool inserts or updates tool statistics for a session
+func (s *Store) UpsertSessionTool(tool *SessionTool) error {
+	query := `
+	INSERT INTO session_tools (
+		session_id, tool_name, call_count, success_count, failure_count,
+		total_execution_time_ms, auto_approved_count, user_approved_count,
+		rejected_count, total_result_size_bytes
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(session_id, tool_name) DO UPDATE SET
+		call_count = excluded.call_count,
+		success_count = excluded.success_count,
+		failure_count = excluded.failure_count,
+		total_execution_time_ms = excluded.total_execution_time_ms,
+		auto_approved_count = excluded.auto_approved_count,
+		user_approved_count = excluded.user_approved_count,
+		rejected_count = excluded.rejected_count,
+		total_result_size_bytes = excluded.total_result_size_bytes
+	`
+
+	_, err := s.db.Exec(query,
+		tool.SessionID, tool.ToolName, tool.CallCount,
+		tool.SuccessCount, tool.FailureCount, tool.TotalExecutionTimeMS,
+		tool.AutoApprovedCount, tool.UserApprovedCount,
+		tool.RejectedCount, tool.TotalResultSizeBytes,
+	)
+
+	return err
+}
+
+// GetSession retrieves a session by ID from the new sessions table
+func (s *Store) GetSession(sessionID string) (*Session, error) {
+	query := `
+	SELECT session_id, organization_id, user_id, start_time, end_time,
+		total_cost_usd, total_input_tokens, total_output_tokens,
+		total_cache_read_tokens, total_cache_creation_tokens, tool_call_count,
+		created_at, updated_at
+	FROM sessions WHERE session_id = ?
+	`
+
+	var session Session
+	var startTime, createdAt, updatedAt int64
+	var endTime sql.NullInt64
+
+	err := s.db.QueryRow(query, sessionID).Scan(
+		&session.SessionID, &session.OrganizationID, &session.UserID,
+		&startTime, &endTime,
+		&session.TotalCostUSD, &session.TotalInputTokens, &session.TotalOutputTokens,
+		&session.TotalCacheReadTokens, &session.TotalCacheCreationTokens, &session.ToolCallCount,
+		&createdAt, &updatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	session.StartTime = time.Unix(startTime, 0)
+	if endTime.Valid {
+		session.EndTime = time.Unix(endTime.Int64, 0)
+	}
+	session.CreatedAt = time.Unix(createdAt, 0)
+	session.UpdatedAt = time.Unix(updatedAt, 0)
+
+	return &session, nil
+}
+
+// GetSessionTools retrieves tool statistics for a session from the new table
+func (s *Store) GetSessionTools(sessionID string) ([]*SessionTool, error) {
+	query := `
+	SELECT session_id, tool_name, call_count, success_count, failure_count,
+		total_execution_time_ms, auto_approved_count, user_approved_count,
+		rejected_count, total_result_size_bytes
+	FROM session_tools
+	WHERE session_id = ?
+	ORDER BY call_count DESC
+	`
+
+	rows, err := s.db.Query(query, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tools []*SessionTool
+	for rows.Next() {
+		var tool SessionTool
+		err := rows.Scan(
+			&tool.SessionID, &tool.ToolName, &tool.CallCount,
+			&tool.SuccessCount, &tool.FailureCount, &tool.TotalExecutionTimeMS,
+			&tool.AutoApprovedCount, &tool.UserApprovedCount,
+			&tool.RejectedCount, &tool.TotalResultSizeBytes,
+		)
+		if err != nil {
+			return nil, err
+		}
+		tools = append(tools, &tool)
+	}
+
+	return tools, rows.Err()
+}
+
+// GetSessionsByOrg retrieves sessions for an organization
+func (s *Store) GetSessionsByOrg(orgID string, limit int) ([]*Session, error) {
+	query := `
+	SELECT session_id, organization_id, user_id, start_time, end_time,
+		total_cost_usd, total_input_tokens, total_output_tokens,
+		total_cache_read_tokens, total_cache_creation_tokens, tool_call_count,
+		created_at, updated_at
+	FROM sessions WHERE organization_id = ?
+	ORDER BY start_time DESC
+	LIMIT ?
+	`
+
+	rows, err := s.db.Query(query, orgID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []*Session
+	for rows.Next() {
+		var session Session
+		var startTime, createdAt, updatedAt int64
+		var endTime sql.NullInt64
+
+		err := rows.Scan(
+			&session.SessionID, &session.OrganizationID, &session.UserID,
+			&startTime, &endTime,
+			&session.TotalCostUSD, &session.TotalInputTokens, &session.TotalOutputTokens,
+			&session.TotalCacheReadTokens, &session.TotalCacheCreationTokens, &session.ToolCallCount,
+			&createdAt, &updatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		session.StartTime = time.Unix(startTime, 0)
+		if endTime.Valid {
+			session.EndTime = time.Unix(endTime.Int64, 0)
+		}
+		session.CreatedAt = time.Unix(createdAt, 0)
+		session.UpdatedAt = time.Unix(updatedAt, 0)
+
+		sessions = append(sessions, &session)
+	}
+
+	return sessions, rows.Err()
+}
+
+// GetSessionsByUser retrieves sessions for a user
+func (s *Store) GetSessionsByUser(userID string, limit int) ([]*Session, error) {
+	query := `
+	SELECT session_id, organization_id, user_id, start_time, end_time,
+		total_cost_usd, total_input_tokens, total_output_tokens,
+		total_cache_read_tokens, total_cache_creation_tokens, tool_call_count,
+		created_at, updated_at
+	FROM sessions WHERE user_id = ?
+	ORDER BY start_time DESC
+	LIMIT ?
+	`
+
+	rows, err := s.db.Query(query, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []*Session
+	for rows.Next() {
+		var session Session
+		var startTime, createdAt, updatedAt int64
+		var endTime sql.NullInt64
+
+		err := rows.Scan(
+			&session.SessionID, &session.OrganizationID, &session.UserID,
+			&startTime, &endTime,
+			&session.TotalCostUSD, &session.TotalInputTokens, &session.TotalOutputTokens,
+			&session.TotalCacheReadTokens, &session.TotalCacheCreationTokens, &session.ToolCallCount,
+			&createdAt, &updatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		session.StartTime = time.Unix(startTime, 0)
+		if endTime.Valid {
+			session.EndTime = time.Unix(endTime.Int64, 0)
+		}
+		session.CreatedAt = time.Unix(createdAt, 0)
+		session.UpdatedAt = time.Unix(updatedAt, 0)
+
+		sessions = append(sessions, &session)
+	}
+
+	return sessions, rows.Err()
+}
+
+// GetToolAggregates retrieves aggregated statistics across all tools from the new table
+func (s *Store) GetToolAggregates(limit int) ([]*ToolAggregates, error) {
+	query := `
+	SELECT
+		tool_name,
+		SUM(call_count) as total_executions,
+		SUM(success_count) as total_successes,
+		SUM(failure_count) as total_failures,
+		CASE WHEN SUM(call_count) > 0
+			THEN CAST(SUM(success_count) AS REAL) / CAST(SUM(call_count) AS REAL)
+			ELSE 0 END as success_rate,
+		CASE WHEN SUM(call_count) > 0
+			THEN SUM(total_execution_time_ms) / SUM(call_count)
+			ELSE 0 END as avg_duration_ms,
+		COUNT(DISTINCT session_id) as sessions_used_in
+	FROM session_tools
+	GROUP BY tool_name
+	ORDER BY total_executions DESC
+	LIMIT ?
+	`
+
+	rows, err := s.db.Query(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var aggregates []*ToolAggregates
+	for rows.Next() {
+		var agg ToolAggregates
+		err := rows.Scan(
+			&agg.ToolName, &agg.TotalExecutions,
+			&agg.TotalSuccesses, &agg.TotalFailures,
+			&agg.SuccessRate, &agg.AvgDurationMS,
+			&agg.SessionsUsedIn,
+		)
+		if err != nil {
+			return nil, err
+		}
+		aggregates = append(aggregates, &agg)
+	}
+
+	return aggregates, rows.Err()
+}

@@ -27,13 +27,18 @@ func NewAPIServer(port int, store *Store, engine *Engine) *APIServer {
 
 	mux := http.NewServeMux()
 
-	// Register endpoints
+	// Register endpoints (legacy)
 	mux.HandleFunc("/api/stats/session/", server.handleSessionStats)
 	mux.HandleFunc("/api/stats/user/", server.handleUserStats)
 	mux.HandleFunc("/api/stats/org/", server.handleOrgStats)
 	mux.HandleFunc("/api/stats/models", server.handleModelsStats)
 	mux.HandleFunc("/api/stats/tools", server.handleToolsStats)
 	mux.HandleFunc("/api/health", server.handleHealth)
+
+	// New schema endpoints
+	mux.HandleFunc("/api/v2/sessions/", server.handleV2Session)
+	mux.HandleFunc("/api/v2/sessions", server.handleV2SessionsList)
+	mux.HandleFunc("/api/v2/tools", server.handleV2Tools)
 
 	server.httpServer = &http.Server{
 		Addr:         fmt.Sprintf(":%d", port),
@@ -48,7 +53,7 @@ func NewAPIServer(port int, store *Store, engine *Engine) *APIServer {
 // Start starts the API server
 func (s *APIServer) Start() error {
 	log.Printf("Starting aggregation API server on port %d", s.port)
-	log.Printf("Endpoints:")
+	log.Printf("Legacy endpoints:")
 	log.Printf("  GET http://localhost:%d/api/stats/session/{session_id}", s.port)
 	log.Printf("  GET http://localhost:%d/api/stats/session/{session_id}/models", s.port)
 	log.Printf("  GET http://localhost:%d/api/stats/session/{session_id}/tools", s.port)
@@ -57,6 +62,11 @@ func (s *APIServer) Start() error {
 	log.Printf("  GET http://localhost:%d/api/stats/models?limit=50", s.port)
 	log.Printf("  GET http://localhost:%d/api/stats/tools?limit=50", s.port)
 	log.Printf("  GET http://localhost:%d/api/health", s.port)
+	log.Printf("V2 endpoints (new schema):")
+	log.Printf("  GET http://localhost:%d/api/v2/sessions?org_id=X&user_id=Y&limit=10", s.port)
+	log.Printf("  GET http://localhost:%d/api/v2/sessions/{session_id}", s.port)
+	log.Printf("  GET http://localhost:%d/api/v2/sessions/{session_id}/tools", s.port)
+	log.Printf("  GET http://localhost:%d/api/v2/tools?limit=50", s.port)
 
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("failed to start API server: %w", err)
@@ -618,4 +628,228 @@ func (s *APIServer) handleToolsStats(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// V2 API handlers for new schema
+
+// handleV2SessionsList handles GET /api/v2/sessions?org_id=X&user_id=Y&limit=N
+func (s *APIServer) handleV2SessionsList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get query params
+	orgID := r.URL.Query().Get("org_id")
+	userID := r.URL.Query().Get("user_id")
+	limit := 10
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	var sessions []*Session
+	var err error
+
+	if userID != "" {
+		sessions, err = s.store.GetSessionsByUser(userID, limit)
+	} else if orgID != "" {
+		sessions, err = s.store.GetSessionsByOrg(orgID, limit)
+	} else {
+		http.Error(w, "Either org_id or user_id query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error retrieving sessions: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response
+	sessionList := make([]map[string]interface{}, len(sessions))
+	for i, session := range sessions {
+		sessionList[i] = buildV2SessionResponse(session)
+	}
+
+	response := map[string]interface{}{
+		"sessions": sessionList,
+		"count":    len(sessions),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleV2Session handles GET /api/v2/sessions/{session_id}[/tools]
+func (s *APIServer) handleV2Session(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract path after /api/v2/sessions/
+	path := strings.TrimPrefix(r.URL.Path, "/api/v2/sessions/")
+	parts := strings.Split(path, "/")
+
+	if len(parts) == 0 || parts[0] == "" {
+		http.Error(w, "Session ID required", http.StatusBadRequest)
+		return
+	}
+
+	sessionID := parts[0]
+
+	// Check for sub-routes
+	if len(parts) > 1 {
+		switch parts[1] {
+		case "tools":
+			s.handleV2SessionTools(w, r, sessionID)
+			return
+		default:
+			http.Error(w, "Unknown sub-resource", http.StatusNotFound)
+			return
+		}
+	}
+
+	// Get session from database
+	session, err := s.store.GetSession(sessionID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Session not found: %v", err), http.StatusNotFound)
+		return
+	}
+
+	response := buildV2SessionResponse(session)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleV2SessionTools handles GET /api/v2/sessions/{session_id}/tools
+func (s *APIServer) handleV2SessionTools(w http.ResponseWriter, r *http.Request, sessionID string) {
+	tools, err := s.store.GetSessionTools(sessionID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error retrieving session tools: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response
+	toolList := make([]map[string]interface{}, len(tools))
+	for i, tool := range tools {
+		successRate := 0.0
+		if tool.CallCount > 0 {
+			successRate = float64(tool.SuccessCount) / float64(tool.CallCount)
+		}
+		avgDurationMS := 0.0
+		if tool.CallCount > 0 {
+			avgDurationMS = tool.TotalExecutionTimeMS / float64(tool.CallCount)
+		}
+		avgResultSizeBytes := int64(0)
+		if tool.CallCount > 0 {
+			avgResultSizeBytes = tool.TotalResultSizeBytes / int64(tool.CallCount)
+		}
+
+		toolList[i] = map[string]interface{}{
+			"tool_name":               tool.ToolName,
+			"call_count":              tool.CallCount,
+			"success_count":           tool.SuccessCount,
+			"failure_count":           tool.FailureCount,
+			"success_rate":            successRate,
+			"total_execution_time_ms": tool.TotalExecutionTimeMS,
+			"avg_execution_time_ms":   avgDurationMS,
+			"decisions": map[string]interface{}{
+				"auto_approved":  tool.AutoApprovedCount,
+				"user_approved":  tool.UserApprovedCount,
+				"rejected":       tool.RejectedCount,
+			},
+			"result_size": map[string]interface{}{
+				"total_bytes": tool.TotalResultSizeBytes,
+				"avg_bytes":   avgResultSizeBytes,
+			},
+		}
+	}
+
+	response := map[string]interface{}{
+		"session_id": sessionID,
+		"tools":      toolList,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleV2Tools handles GET /api/v2/tools
+func (s *APIServer) handleV2Tools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get limit from query params
+	limit := 50
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	toolAggs, err := s.store.GetToolAggregates(limit)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error retrieving tool stats: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response
+	tools := make([]map[string]interface{}, len(toolAggs))
+	for i, ta := range toolAggs {
+		tools[i] = map[string]interface{}{
+			"tool_name":        ta.ToolName,
+			"total_executions": ta.TotalExecutions,
+			"total_successes":  ta.TotalSuccesses,
+			"total_failures":   ta.TotalFailures,
+			"success_rate":     ta.SuccessRate,
+			"avg_duration_ms":  ta.AvgDurationMS,
+			"used_in_sessions": ta.SessionsUsedIn,
+		}
+	}
+
+	response := map[string]interface{}{
+		"tools": tools,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// buildV2SessionResponse builds the JSON response for a session
+func buildV2SessionResponse(session *Session) map[string]interface{} {
+	response := map[string]interface{}{
+		"session_id":      session.SessionID,
+		"organization_id": session.OrganizationID,
+		"user_id":         session.UserID,
+		"start_time":      session.StartTime.Format(time.RFC3339),
+		"costs": map[string]interface{}{
+			"total_usd": session.TotalCostUSD,
+		},
+		"tokens": map[string]interface{}{
+			"input":          session.TotalInputTokens,
+			"output":         session.TotalOutputTokens,
+			"cache_read":     session.TotalCacheReadTokens,
+			"cache_creation": session.TotalCacheCreationTokens,
+			"total":          session.TotalInputTokens + session.TotalOutputTokens + session.TotalCacheReadTokens,
+		},
+		"tool_call_count": session.ToolCallCount,
+		"metadata": map[string]interface{}{
+			"created_at": session.CreatedAt.Format(time.RFC3339),
+			"updated_at": session.UpdatedAt.Format(time.RFC3339),
+		},
+	}
+
+	if !session.EndTime.IsZero() {
+		response["end_time"] = session.EndTime.Format(time.RFC3339)
+		response["duration_seconds"] = session.EndTime.Sub(session.StartTime).Seconds()
+	}
+
+	return response
 }
