@@ -637,18 +637,30 @@ func (s *Store) UpsertSession(session *Session) error {
 	query := `
 	INSERT INTO sessions (
 		session_id, organization_id, user_id, start_time, end_time,
+		client_name, client_version, terminal_type, host_arch, os_type, os_version,
 		total_cost_usd, total_input_tokens, total_output_tokens,
 		total_cache_read_tokens, total_cache_creation_tokens, tool_call_count,
+		api_request_count, api_error_count, user_prompt_count, total_api_latency_ms,
 		created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(session_id) DO UPDATE SET
 		end_time = excluded.end_time,
+		client_name = COALESCE(excluded.client_name, client_name),
+		client_version = COALESCE(excluded.client_version, client_version),
+		terminal_type = COALESCE(excluded.terminal_type, terminal_type),
+		host_arch = COALESCE(excluded.host_arch, host_arch),
+		os_type = COALESCE(excluded.os_type, os_type),
+		os_version = COALESCE(excluded.os_version, os_version),
 		total_cost_usd = excluded.total_cost_usd,
 		total_input_tokens = excluded.total_input_tokens,
 		total_output_tokens = excluded.total_output_tokens,
 		total_cache_read_tokens = excluded.total_cache_read_tokens,
 		total_cache_creation_tokens = excluded.total_cache_creation_tokens,
 		tool_call_count = excluded.tool_call_count,
+		api_request_count = excluded.api_request_count,
+		api_error_count = excluded.api_error_count,
+		user_prompt_count = excluded.user_prompt_count,
+		total_api_latency_ms = excluded.total_api_latency_ms,
 		updated_at = excluded.updated_at
 	`
 
@@ -661,9 +673,48 @@ func (s *Store) UpsertSession(session *Session) error {
 	_, err := s.db.Exec(query,
 		session.SessionID, session.OrganizationID, session.UserID,
 		session.StartTime.Unix(), endTime,
+		nilIfEmpty(session.ClientName), nilIfEmpty(session.ClientVersion),
+		nilIfEmpty(session.TerminalType), nilIfEmpty(session.HostArch),
+		nilIfEmpty(session.OSType), nilIfEmpty(session.OSVersion),
 		session.TotalCostUSD, session.TotalInputTokens, session.TotalOutputTokens,
 		session.TotalCacheReadTokens, session.TotalCacheCreationTokens, session.ToolCallCount,
+		session.APIRequestCount, session.APIErrorCount, session.UserPromptCount, session.TotalAPILatencyMS,
 		session.CreatedAt.Unix(), session.UpdatedAt.Unix(),
+	)
+
+	return err
+}
+
+// nilIfEmpty returns nil if the string is empty, otherwise returns the string pointer
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// UpsertSessionModel inserts or updates model statistics for a session
+func (s *Store) UpsertSessionModel(model *SessionModel) error {
+	query := `
+	INSERT INTO session_models (
+		session_id, model, request_count, cost_usd,
+		input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+		total_latency_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(session_id, model) DO UPDATE SET
+		request_count = excluded.request_count,
+		cost_usd = excluded.cost_usd,
+		input_tokens = excluded.input_tokens,
+		output_tokens = excluded.output_tokens,
+		cache_read_tokens = excluded.cache_read_tokens,
+		cache_creation_tokens = excluded.cache_creation_tokens,
+		total_latency_ms = excluded.total_latency_ms
+	`
+
+	_, err := s.db.Exec(query,
+		model.SessionID, model.Model, model.RequestCount, model.CostUSD,
+		model.InputTokens, model.OutputTokens, model.CacheReadTokens, model.CacheCreationTokens,
+		model.TotalLatencyMS,
 	)
 
 	return err

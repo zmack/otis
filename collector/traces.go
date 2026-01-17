@@ -48,7 +48,7 @@ func (h *TraceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		EmitUnpopulated: false,
 	}.Format(req)
 
-	if err := h.writer.WriteJSON(map[string]string{"data": jsonData}); err != nil {
+	if err := h.writer.WriteLine(jsonData); err != nil {
 		log.Printf("Failed to write trace data: %v", err)
 		http.Error(w, "Failed to write data", http.StatusInternalServerError)
 		return

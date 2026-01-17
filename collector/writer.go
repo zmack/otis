@@ -45,3 +45,20 @@ func (w *FileWriter) WriteJSON(data interface{}) error {
 
 	return nil
 }
+
+func (w *FileWriter) WriteLine(s string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	f, err := os.OpenFile(w.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open file %s: %w", w.filePath, err)
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(s + "\n"); err != nil {
+		return fmt.Errorf("failed to write to file %s: %w", w.filePath, err)
+	}
+
+	return nil
+}

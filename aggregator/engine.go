@@ -9,28 +9,33 @@ import (
 )
 
 type Engine struct {
-	store            *Store
-	sessionCache     map[string]*SessionStats
-	modelStatsCache  map[string]map[string]*SessionModelStats  // sessionID -> model -> stats
-	toolStatsCache   map[string]map[string]*SessionToolStats   // sessionID -> toolName -> stats
-	cacheMutex       sync.RWMutex
-	flushInterval    time.Duration
+	store         *Store
+	cacheMutex    sync.RWMutex
+	flushInterval time.Duration
 
-	// New schema caches
-	sessionsCache     map[string]*Session                      // sessionID -> Session
-	sessionToolsCache map[string]map[string]*SessionTool       // sessionID -> toolName -> SessionTool
+	// Session caches
+	sessionsCache      map[string]*Session                 // sessionID -> Session
+	sessionModelsCache map[string]map[string]*SessionModel // sessionID -> model -> SessionModel
+	sessionToolsCache  map[string]map[string]*SessionTool  // sessionID -> toolName -> SessionTool
+
+	// Legacy caches (to be removed)
+	sessionCache    map[string]*SessionStats
+	modelStatsCache map[string]map[string]*SessionModelStats // sessionID -> model -> stats
+	toolStatsCache  map[string]map[string]*SessionToolStats  // sessionID -> toolName -> stats
 }
 
 // NewEngine creates a new aggregation engine
 func NewEngine(store *Store) *Engine {
 	engine := &Engine{
-		store:             store,
-		sessionCache:      make(map[string]*SessionStats),
-		modelStatsCache:   make(map[string]map[string]*SessionModelStats),
-		toolStatsCache:    make(map[string]map[string]*SessionToolStats),
-		flushInterval:     10 * time.Second,
-		sessionsCache:     make(map[string]*Session),
-		sessionToolsCache: make(map[string]map[string]*SessionTool),
+		store:              store,
+		flushInterval:      10 * time.Second,
+		sessionsCache:      make(map[string]*Session),
+		sessionModelsCache: make(map[string]map[string]*SessionModel),
+		sessionToolsCache:  make(map[string]map[string]*SessionTool),
+		// Legacy caches (to be removed)
+		sessionCache:    make(map[string]*SessionStats),
+		modelStatsCache: make(map[string]map[string]*SessionModelStats),
+		toolStatsCache:  make(map[string]map[string]*SessionToolStats),
 	}
 
 	// Start periodic flush
@@ -52,39 +57,7 @@ func (e *Engine) FlushCache() {
 	e.cacheMutex.Lock()
 	defer e.cacheMutex.Unlock()
 
-	// Flush session stats (old schema)
-	for sessionID, stats := range e.sessionCache {
-		stats.UpdatedAt = time.Now()
-		if err := e.store.UpsertSessionStats(stats); err != nil {
-			log.Printf("Error upserting session stats for %s: %v", sessionID, err)
-		}
-	}
-
-	// Flush model stats
-	modelStatsCount := 0
-	for sessionID, modelMap := range e.modelStatsCache {
-		for _, modelStats := range modelMap {
-			if err := e.store.UpsertSessionModelStats(modelStats); err != nil {
-				log.Printf("Error upserting model stats for session %s, model %s: %v", sessionID, modelStats.Model, err)
-			} else {
-				modelStatsCount++
-			}
-		}
-	}
-
-	// Flush tool stats (old schema)
-	toolStatsCount := 0
-	for sessionID, toolMap := range e.toolStatsCache {
-		for _, toolStats := range toolMap {
-			if err := e.store.UpsertSessionToolStats(toolStats); err != nil {
-				log.Printf("Error upserting tool stats for session %s, tool %s: %v", sessionID, toolStats.ToolName, err)
-			} else {
-				toolStatsCount++
-			}
-		}
-	}
-
-	// Flush to new sessions table
+	// Flush sessions
 	sessionsCount := 0
 	for sessionID, session := range e.sessionsCache {
 		session.UpdatedAt = time.Now()
@@ -95,7 +68,19 @@ func (e *Engine) FlushCache() {
 		}
 	}
 
-	// Flush to new session_tools table
+	// Flush session_models
+	sessionModelsCount := 0
+	for sessionID, modelMap := range e.sessionModelsCache {
+		for _, model := range modelMap {
+			if err := e.store.UpsertSessionModel(model); err != nil {
+				log.Printf("Error upserting session model for session %s, model %s: %v", sessionID, model.Model, err)
+			} else {
+				sessionModelsCount++
+			}
+		}
+	}
+
+	// Flush session_tools
 	sessionToolsCount := 0
 	for sessionID, toolMap := range e.sessionToolsCache {
 		for _, tool := range toolMap {
@@ -107,8 +92,30 @@ func (e *Engine) FlushCache() {
 		}
 	}
 
-	log.Printf("Flushed %d session stats, %d model stats, %d tool stats, %d sessions, %d session tools to database",
-		len(e.sessionCache), modelStatsCount, toolStatsCount, sessionsCount, sessionToolsCount)
+	// Legacy: Flush to old schema (to be removed)
+	for sessionID, stats := range e.sessionCache {
+		stats.UpdatedAt = time.Now()
+		if err := e.store.UpsertSessionStats(stats); err != nil {
+			log.Printf("Error upserting session stats for %s: %v", sessionID, err)
+		}
+	}
+	for sessionID, modelMap := range e.modelStatsCache {
+		for _, modelStats := range modelMap {
+			if err := e.store.UpsertSessionModelStats(modelStats); err != nil {
+				log.Printf("Error upserting model stats for session %s, model %s: %v", sessionID, modelStats.Model, err)
+			}
+		}
+	}
+	for sessionID, toolMap := range e.toolStatsCache {
+		for _, toolStats := range toolMap {
+			if err := e.store.UpsertSessionToolStats(toolStats); err != nil {
+				log.Printf("Error upserting tool stats for session %s, tool %s: %v", sessionID, toolStats.ToolName, err)
+			}
+		}
+	}
+
+	log.Printf("Flushed %d sessions, %d session models, %d session tools to database",
+		sessionsCount, sessionModelsCount, sessionToolsCount)
 }
 
 // ProcessMetric processes a metric record and updates aggregations
@@ -120,7 +127,20 @@ func (e *Engine) ProcessMetric(record *MetricRecord) {
 	e.cacheMutex.Lock()
 	defer e.cacheMutex.Unlock()
 
-	// Get or create session stats (old schema)
+	// Build environment info from attributes
+	env := &SessionEnv{
+		ClientName:    record.ServiceName,
+		ClientVersion: record.Attributes["service.version"],
+		TerminalType:  record.Attributes["terminal.type"],
+		HostArch:      record.Attributes["host.arch"],
+		OSType:        record.Attributes["os.type"],
+		OSVersion:     record.Attributes["os.version"],
+	}
+
+	// Get or create session (new schema)
+	session := e.getOrCreateSession(record.SessionID, record.OrganizationID, record.UserID, record.Timestamp, env)
+
+	// Legacy: Get or create session stats (old schema)
 	stats, exists := e.sessionCache[record.SessionID]
 	if !exists {
 		stats = &SessionStats{
@@ -140,9 +160,6 @@ func (e *Engine) ProcessMetric(record *MetricRecord) {
 	}
 
 	stats.LastUpdateTime = record.Timestamp
-
-	// Get or create session (new schema)
-	session := e.getOrCreateSession(record.SessionID, record.OrganizationID, record.UserID, record.Timestamp)
 
 	// Process specific metric types
 	switch record.MetricName {
@@ -167,6 +184,11 @@ func (e *Engine) ProcessMetric(record *MetricRecord) {
 
 		// Track per-model cost
 		if model := record.Attributes["model"]; model != "" && cost > 0 {
+			e.updateSessionModel(record.SessionID, model, func(sm *SessionModel) {
+				sm.CostUSD += cost
+				sm.RequestCount++
+			})
+			// Legacy
 			e.updateModelStats(record.SessionID, model, func(ms *SessionModelStats) {
 				ms.CostUSD += cost
 				ms.RequestCount++
@@ -201,6 +223,19 @@ func (e *Engine) ProcessMetric(record *MetricRecord) {
 
 		// Track per-model tokens
 		if model := record.Attributes["model"]; model != "" && tokenValue > 0 {
+			e.updateSessionModel(record.SessionID, model, func(sm *SessionModel) {
+				switch tokenType {
+				case "input":
+					sm.InputTokens += tokenValue
+				case "output":
+					sm.OutputTokens += tokenValue
+				case "cacheRead":
+					sm.CacheReadTokens += tokenValue
+				case "cacheCreation":
+					sm.CacheCreationTokens += tokenValue
+				}
+			})
+			// Legacy
 			e.updateModelStats(record.SessionID, model, func(ms *SessionModelStats) {
 				switch tokenType {
 				case "input":
@@ -239,7 +274,16 @@ func (e *Engine) ProcessLog(record *LogRecord) {
 	e.cacheMutex.Lock()
 	defer e.cacheMutex.Unlock()
 
-	// Get or create session stats (old schema)
+	// Build environment info from attributes
+	env := &SessionEnv{
+		ClientName:   record.ServiceName,
+		TerminalType: extractString(record.Attributes, "terminal.type"),
+	}
+
+	// Get or create session (new schema)
+	session := e.getOrCreateSession(record.SessionID, record.OrganizationID, record.UserID, record.Timestamp, env)
+
+	// Legacy: Get or create session stats (old schema)
 	stats, exists := e.sessionCache[record.SessionID]
 	if !exists {
 		stats = &SessionStats{
@@ -257,33 +301,39 @@ func (e *Engine) ProcessLog(record *LogRecord) {
 
 	stats.LastUpdateTime = record.Timestamp
 
-	// Get or create session (new schema)
-	session := e.getOrCreateSession(record.SessionID, record.OrganizationID, record.UserID, record.Timestamp)
-
 	// Determine log type from body
 	if containsString(record.Body, "claude_code.api_request") {
 		stats.APIRequestCount++
+		session.APIRequestCount++
 
 		// Extract latency if available
 		durationMS := extractFloat(record.Attributes, "duration_ms")
 		if durationMS > 0 {
 			stats.TotalAPILatencyMS += durationMS
 			stats.AvgAPILatencyMS = stats.TotalAPILatencyMS / float64(stats.APIRequestCount)
+			session.TotalAPILatencyMS += durationMS
 		}
 
 		// Track per-model latency
 		if model := extractString(record.Attributes, "model"); model != "" && durationMS > 0 {
+			e.updateSessionModel(record.SessionID, model, func(sm *SessionModel) {
+				sm.TotalLatencyMS += durationMS
+			})
+			// Legacy
 			e.updateModelStats(record.SessionID, model, func(ms *SessionModelStats) {
 				ms.TotalLatencyMS += durationMS
-				// Request count is tracked in cost.usage, so we calculate avg based on that
 				if ms.RequestCount > 0 {
 					ms.AvgLatencyMS = ms.TotalLatencyMS / float64(ms.RequestCount)
 				}
 			})
 		}
 
+	} else if containsString(record.Body, "claude_code.api_error") {
+		session.APIErrorCount++
+
 	} else if containsString(record.Body, "claude_code.user_prompt") {
 		stats.UserPromptCount++
+		session.UserPromptCount++
 
 		// Extract and store the prompt if it's not redacted
 		promptText := extractString(record.Attributes, "prompt")
@@ -604,8 +654,18 @@ func (e *Engine) updateToolStats(sessionID, toolName string, updateFn func(*Sess
 	updateFn(toolStats)
 }
 
+// SessionEnv holds environment information for a session
+type SessionEnv struct {
+	ClientName    string
+	ClientVersion string
+	TerminalType  string
+	HostArch      string
+	OSType        string
+	OSVersion     string
+}
+
 // getOrCreateSession gets or creates a session in the new schema cache
-func (e *Engine) getOrCreateSession(sessionID, orgID, userID string, timestamp time.Time) *Session {
+func (e *Engine) getOrCreateSession(sessionID, orgID, userID string, timestamp time.Time, env *SessionEnv) *Session {
 	session, exists := e.sessionsCache[sessionID]
 	if !exists {
 		session = &Session{
@@ -618,9 +678,49 @@ func (e *Engine) getOrCreateSession(sessionID, orgID, userID string, timestamp t
 		e.sessionsCache[sessionID] = session
 	}
 
+	// Update environment info if provided (first time we see it)
+	if env != nil {
+		if session.ClientName == "" && env.ClientName != "" {
+			session.ClientName = env.ClientName
+		}
+		if session.ClientVersion == "" && env.ClientVersion != "" {
+			session.ClientVersion = env.ClientVersion
+		}
+		if session.TerminalType == "" && env.TerminalType != "" {
+			session.TerminalType = env.TerminalType
+		}
+		if session.HostArch == "" && env.HostArch != "" {
+			session.HostArch = env.HostArch
+		}
+		if session.OSType == "" && env.OSType != "" {
+			session.OSType = env.OSType
+		}
+		if session.OSVersion == "" && env.OSVersion != "" {
+			session.OSVersion = env.OSVersion
+		}
+	}
+
 	// Update end_time to track last activity
 	session.EndTime = timestamp
 	return session
+}
+
+// updateSessionModel gets or creates a session model in the cache and applies the update function
+func (e *Engine) updateSessionModel(sessionID, model string, updateFn func(*SessionModel)) {
+	if e.sessionModelsCache[sessionID] == nil {
+		e.sessionModelsCache[sessionID] = make(map[string]*SessionModel)
+	}
+
+	sm, exists := e.sessionModelsCache[sessionID][model]
+	if !exists {
+		sm = &SessionModel{
+			SessionID: sessionID,
+			Model:     model,
+		}
+		e.sessionModelsCache[sessionID][model] = sm
+	}
+
+	updateFn(sm)
 }
 
 // updateSessionTool gets or creates a session tool in the new schema cache and applies the update function

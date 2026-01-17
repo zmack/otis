@@ -189,6 +189,14 @@ type Session struct {
 	StartTime      time.Time
 	EndTime        time.Time
 
+	// Environment info
+	ClientName    string
+	ClientVersion string
+	TerminalType  string
+	HostArch      string
+	OSType        string
+	OSVersion     string
+
 	// Summary stats
 	TotalCostUSD             float64
 	TotalInputTokens         int64
@@ -196,9 +204,26 @@ type Session struct {
 	TotalCacheReadTokens     int64
 	TotalCacheCreationTokens int64
 	ToolCallCount            int
+	APIRequestCount          int
+	APIErrorCount            int
+	UserPromptCount          int
+	TotalAPILatencyMS        float64
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// SessionModel represents per-model statistics within a session
+type SessionModel struct {
+	SessionID           string
+	Model               string
+	RequestCount        int
+	CostUSD             float64
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	TotalLatencyMS      float64
 }
 
 // SessionTool represents per-tool statistics within a session

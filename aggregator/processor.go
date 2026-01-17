@@ -177,22 +177,16 @@ func (p *Processor) ProcessFile(filePath string) error {
 
 // processLine processes a single JSONL line
 func (p *Processor) processLine(filename, line string) error {
-	// Parse the wrapper object that contains "data" field
-	var wrapper map[string]interface{}
-	if err := json.Unmarshal([]byte(line), &wrapper); err != nil {
-		return fmt.Errorf("failed to unmarshal wrapper: %w", err)
-	}
-
-	// Get the "data" field which contains the JSON string
-	dataStr, ok := wrapper["data"].(string)
-	if !ok {
-		return fmt.Errorf("no 'data' field found in wrapper")
-	}
-
-	// Parse the actual data
 	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
-		return fmt.Errorf("failed to unmarshal data: %w", err)
+	if err := json.Unmarshal([]byte(line), &data); err != nil {
+		return fmt.Errorf("failed to unmarshal line: %w", err)
+	}
+
+	// Handle legacy wrapped format: {"data": "<json string>"}
+	if dataStr, ok := data["data"].(string); ok {
+		if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
+			return fmt.Errorf("failed to unmarshal wrapped data: %w", err)
+		}
 	}
 
 	// Route to appropriate handler based on filename

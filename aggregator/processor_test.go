@@ -6,6 +6,66 @@ import (
 	"testing"
 )
 
+// TestProcessLineBackwardsCompatibility tests that processLine handles both
+// the old wrapped format {"data": "<json>"} and the new direct format.
+func TestProcessLineBackwardsCompatibility(t *testing.T) {
+	dbPath := "./test_compat.db"
+	dataDir := "./test_compat_data"
+	defer os.Remove(dbPath)
+	defer os.RemoveAll(dataDir)
+
+	os.MkdirAll(dataDir, 0755)
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	engine := NewEngine(store)
+	processor := NewProcessor(dataDir, store, engine, 60)
+
+	// Old wrapped format
+	oldFormat := `{"data":"{\"resourceMetrics\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"test\"}}]},\"scopeMetrics\":[{\"metrics\":[{\"name\":\"test.metric\",\"sum\":{\"dataPoints\":[{\"timeUnixNano\":\"1000000000\",\"asDouble\":1.0}]}}]}]}]}"}`
+
+	// New direct format
+	newFormat := `{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"test"}}]},"scopeMetrics":[{"metrics":[{"name":"test.metric","sum":{"dataPoints":[{"timeUnixNano":"1000000000","asDouble":1.0}]}}]}]}]}`
+
+	// Both formats should parse without error
+	if err := processor.processLine("metrics.jsonl", oldFormat); err != nil {
+		t.Errorf("Failed to process old wrapped format: %v", err)
+	}
+
+	if err := processor.processLine("metrics.jsonl", newFormat); err != nil {
+		t.Errorf("Failed to process new direct format: %v", err)
+	}
+}
+
+// TestProcessLineRejectsInvalidJSON tests that invalid JSON is rejected.
+func TestProcessLineRejectsInvalidJSON(t *testing.T) {
+	dbPath := "./test_invalid.db"
+	dataDir := "./test_invalid_data"
+	defer os.Remove(dbPath)
+	defer os.RemoveAll(dataDir)
+
+	os.MkdirAll(dataDir, 0755)
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	engine := NewEngine(store)
+	processor := NewProcessor(dataDir, store, engine, 60)
+
+	invalidJSON := `{not valid json}`
+
+	if err := processor.processLine("metrics.jsonl", invalidJSON); err == nil {
+		t.Error("Expected error for invalid JSON, got nil")
+	}
+}
+
 // TestExtractLogRecordFromLogAttributes tests that session.id, user.id, organization.id
 // are correctly extracted from log record attributes (not just resource attributes).
 // This is critical because Claude Code sends these identifiers in log attributes.
